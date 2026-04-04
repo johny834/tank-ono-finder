@@ -386,6 +386,81 @@ button { cursor: pointer; border: none; background: none; color: inherit; font: 
 }
 .popup-error { color: #f87171; font-size: 12px; padding: 4px 0; }
 
+/* History modal */
+#history-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,.65);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+#history-overlay.hidden { display: none; }
+
+#history-modal {
+  background: var(--bg1); border: 1px solid var(--border-light);
+  border-radius: var(--radius); box-shadow: 0 16px 64px rgba(0,0,0,.7);
+  width: 90vw; max-width: 640px;
+  max-height: 85vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+#history-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px; flex-shrink: 0;
+}
+#history-title {
+  font-size: 15px; font-weight: 600; color: var(--text-primary);
+}
+#history-close {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; color: var(--text-muted);
+  background: var(--bg3); border: 1px solid var(--border);
+  transition: color .15s, background .15s;
+}
+#history-close:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+#history-tabs {
+  display: flex; gap: 4px; padding: 0 16px 12px; flex-shrink: 0;
+}
+.htab {
+  padding: 6px 14px; border-radius: 20px;
+  font-size: 12px; font-weight: 500;
+  color: var(--text-secondary); background: var(--bg2);
+  border: 1px solid var(--border);
+  transition: all .15s;
+}
+.htab:hover { color: var(--text-primary); background: var(--bg3); }
+.htab.active {
+  color: var(--orange); background: var(--orange-dim);
+  border-color: rgba(245,158,11,.35);
+}
+
+#history-chart-wrap {
+  flex: 1; min-height: 250px; max-height: 400px;
+  padding: 0 16px 8px; position: relative;
+}
+#history-chart { width: 100% !important; height: 100% !important; }
+
+#history-status {
+  padding: 6px 16px 14px; font-size: 11px; color: var(--text-muted);
+  text-align: center; flex-shrink: 0; min-height: 28px;
+}
+
+.popup-history-btn {
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  width: 100%; margin-top: 8px; padding: 7px 0;
+  border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 500;
+  color: var(--orange); background: var(--orange-dim);
+  border: 1px solid rgba(245,158,11,.25);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.popup-history-btn:hover {
+  background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4);
+}
+
 /* Custom map markers */
 .custom-pin { background: transparent !important; border: none !important; }
 

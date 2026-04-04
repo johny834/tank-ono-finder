@@ -28,6 +28,12 @@
           <span id="price-dot" class="status-dot loading"></span>
           <span id="price-status">Načítání cen…</span>
         </div>
+        <button class="icon-btn" title="Historie cen" onclick="openHistory()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </button>
         <button id="refresh-btn" class="icon-btn" title="Obnovit ceny" onclick="fetchPrices()">
           <svg id="refresh-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"
             stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -75,6 +81,26 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <!-- History modal -->
+  <div id="history-overlay" class="hidden" onclick="closeHistory(event)">
+    <div id="history-modal">
+      <div id="history-header">
+        <div id="history-title">Historie cen</div>
+        <button id="history-close" onclick="closeHistory()">&times;</button>
+      </div>
+      <div id="history-tabs">
+        <button class="htab active" data-range="week" onclick="switchHistoryTab('week')">Týden</button>
+        <button class="htab" data-range="month" onclick="switchHistoryTab('month')">Měsíc</button>
+        <button class="htab" data-range="half" onclick="switchHistoryTab('half')">Půl roku</button>
+      </div>
+      <div id="history-chart-wrap">
+        <canvas id="history-chart"></canvas>
+      </div>
+      <div id="history-status"></div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

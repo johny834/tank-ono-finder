@@ -254,6 +254,13 @@ function buildPopupHTML(station) {
     if (prices.validity) {
       html += `<div class="popup-validity"><strong>Platnost:</strong> ${prices.validity}</div>`;
     }
+
+    html += `<button class="popup-history-btn" onclick="openHistory()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      Historie cen
+    </button>`;
   }
 
   html += '</div>';
@@ -528,6 +535,215 @@ function parsePrices(html) {
   if (Object.values(result).every(v => v === null || v === '')) return null;
 
   return result;
+}
+
+// ── History ─────────────────────────────────────────────────────────────
+let historyChart = null;
+let historyCache = {}; // range -> [{date, prices}]
+let currentRange = 'week';
+
+const RANGE_DAYS = { week: 7, month: 30, half: 180 };
+
+const FUEL_COLORS = {
+  natural95: { border: '#f59e0b', bg: 'rgba(245,158,11,.15)' },
+  diesel:    { border: '#3b82f6', bg: 'rgba(59,130,246,.15)' },
+  lpg:       { border: '#22c55e', bg: 'rgba(34,197,94,.15)' },
+  natural95premium: { border: '#fb923c', bg: 'rgba(251,146,60,.12)' },
+  natural98: { border: '#a855f7', bg: 'rgba(168,85,247,.12)' },
+  dieselplus:{ border: '#06b6d4', bg: 'rgba(6,182,212,.12)' },
+  adblue:    { border: '#64748b', bg: 'rgba(100,116,139,.12)' },
+};
+
+const FUEL_LABELS = {
+  natural95: 'Natural 95', diesel: 'Diesel', lpg: 'LPG',
+  natural95premium: 'Nat. 95+', natural98: 'Natural 98',
+  dieselplus: 'Diesel+', adblue: 'AdBlue',
+};
+
+function openHistory() {
+  document.getElementById('history-overlay').classList.remove('hidden');
+  switchHistoryTab(currentRange);
+}
+
+function closeHistory(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('history-overlay').classList.add('hidden');
+}
+
+function switchHistoryTab(range) {
+  currentRange = range;
+  document.querySelectorAll('.htab').forEach(el => {
+    el.classList.toggle('active', el.dataset.range === range);
+  });
+  loadHistory(range);
+}
+
+async function loadHistory(range) {
+  const statusEl = document.getElementById('history-status');
+  statusEl.textContent = 'Načítání historických cen…';
+
+  if (historyCache[range]) {
+    renderHistoryChart(historyCache[range]);
+    statusEl.textContent = `${historyCache[range].length} datových bodů`;
+    return;
+  }
+
+  const days = RANGE_DAYS[range];
+  const stepDays = range === 'half' ? 3 : 1;
+  const dataPoints = [];
+  const now = new Date();
+  let fetched = 0;
+  const totalSteps = Math.ceil(days / stepDays);
+
+  for (let d = days; d >= 0; d -= stepDays) {
+    const date = new Date(now);
+    date.setDate(date.getDate() - d);
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const yyyy = date.getFullYear();
+    const dateStr = `${dd}/${mm}/${yyyy}`;
+
+    try {
+      const body = new URLSearchParams({ txtDate: dateStr, hod: '12', min: '00' });
+      const target = 'https://tank-ono.cz/cz/index.php?page=archiv';
+      const proxy = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
+      const resp = await fetch(proxy, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const html = await resp.text();
+      const p = parsePrices(html);
+      if (p && !p.error) {
+        dataPoints.push({
+          date: `${dd}.${mm}.`,
+          dateObj: new Date(yyyy, date.getMonth(), date.getDate()),
+          ...p,
+        });
+      }
+    } catch (e) {
+      console.warn('History fetch error for', dateStr, e);
+    }
+
+    fetched++;
+    statusEl.textContent = `Načítání: ${fetched}/${totalSteps}…`;
+
+    // Small delay to be respectful
+    if (d > 0) await new Promise(r => setTimeout(r, 250));
+  }
+
+  // Deduplicate by price validity (same prices = same period)
+  const deduped = deduplicateHistory(dataPoints);
+  historyCache[range] = deduped;
+  renderHistoryChart(deduped);
+  statusEl.textContent = `${deduped.length} datových bodů`;
+}
+
+function deduplicateHistory(points) {
+  if (!points.length) return points;
+  const result = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const prev = result[result.length - 1];
+    const curr = points[i];
+    // Keep if any primary price changed
+    if (prev.natural95 !== curr.natural95 ||
+        prev.diesel !== curr.diesel ||
+        prev.lpg !== curr.lpg ||
+        prev.date !== curr.date) {
+      result.push(curr);
+    }
+  }
+  return result;
+}
+
+function parsePriceFloat(val) {
+  if (!val || val === ',') return null;
+  return parseFloat(val.replace(',', '.'));
+}
+
+function renderHistoryChart(data) {
+  const ctx = document.getElementById('history-chart').getContext('2d');
+  if (historyChart) historyChart.destroy();
+
+  const labels = data.map(d => d.date);
+
+  // Only include fuels that have data
+  const fuelKeys = ['natural95', 'diesel', 'lpg', 'natural95premium', 'natural98', 'dieselplus', 'adblue'];
+  const activeFuels = fuelKeys.filter(key =>
+    data.some(d => parsePriceFloat(d[key]) !== null)
+  );
+
+  const datasets = activeFuels.map(key => {
+    const color = FUEL_COLORS[key] || { border: '#888', bg: 'rgba(136,136,136,.15)' };
+    // Primary fuels get thicker lines
+    const isPrimary = ['natural95', 'diesel', 'lpg'].includes(key);
+    return {
+      label: FUEL_LABELS[key] || key,
+      data: data.map(d => parsePriceFloat(d[key])),
+      borderColor: color.border,
+      backgroundColor: color.bg,
+      borderWidth: isPrimary ? 2.5 : 1.5,
+      pointRadius: data.length > 30 ? 0 : 3,
+      pointHoverRadius: 5,
+      tension: 0.3,
+      fill: false,
+      spanGaps: true,
+      hidden: !isPrimary, // secondary fuels hidden by default
+    };
+  });
+
+  historyChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: '#8b90b8',
+            font: { size: 11 },
+            boxWidth: 14,
+            padding: 12,
+            usePointStyle: true,
+          },
+        },
+        tooltip: {
+          backgroundColor: '#1e2340',
+          titleColor: '#e8eaf6',
+          bodyColor: '#8b90b8',
+          borderColor: '#272c4a',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            label: ctx => {
+              if (ctx.parsed.y === null) return null;
+              return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2).replace('.', ',')} Kč/l`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#545878', font: { size: 10 }, maxRotation: 45 },
+          grid: { color: 'rgba(39,44,74,.5)' },
+        },
+        y: {
+          ticks: {
+            color: '#545878', font: { size: 10 },
+            callback: v => v.toFixed(0) + ' Kč',
+          },
+          grid: { color: 'rgba(39,44,74,.5)' },
+        },
+      },
+    },
+  });
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
