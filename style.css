@@ -313,6 +313,79 @@ button { cursor: pointer; border: none; background: none; color: inherit; font: 
 }
 #geo-notice.hidden { display: none; }
 
+/* Leaflet popup override for station detail */
+.leaflet-popup-content-wrapper {
+  background: var(--bg2) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6) !important;
+  padding: 0 !important;
+}
+.leaflet-popup-content {
+  margin: 0 !important;
+  font-size: 13px;
+  min-width: 220px;
+  max-width: 280px;
+}
+.leaflet-popup-tip {
+  background: var(--bg2) !important;
+  border: 1px solid var(--border-light) !important;
+  border-top: none !important;
+  border-left: none !important;
+  box-shadow: none !important;
+}
+.leaflet-popup-close-button {
+  color: var(--text-muted) !important;
+  font-size: 18px !important;
+  top: 6px !important;
+  right: 8px !important;
+}
+.leaflet-popup-close-button:hover {
+  color: var(--text-primary) !important;
+}
+
+.popup-inner { padding: 14px; }
+.popup-name {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  line-height: 1.35; margin-bottom: 6px; padding-right: 20px;
+}
+.popup-chips {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.popup-prices-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 5px; margin-bottom: 5px;
+}
+.popup-price-item {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 4px; text-align: center;
+}
+.popup-price-item.highlight { border-color: rgba(245,158,11,.3); }
+.popup-price-label {
+  font-size: 9px; color: var(--text-muted); text-transform: uppercase;
+  letter-spacing: .04em; margin-bottom: 3px; font-weight: 500;
+}
+.popup-price-value {
+  font-size: 14px; font-weight: 700; color: var(--orange-light); line-height: 1;
+}
+.popup-price-value.secondary {
+  font-size: 12px; color: var(--text-secondary);
+}
+.popup-price-unit { font-size: 9px; color: var(--text-muted); font-weight: 400; }
+.popup-validity {
+  font-size: 10px; color: var(--text-muted); margin-top: 6px;
+  padding: 4px 6px; background: var(--bg0); border-radius: var(--radius-sm);
+}
+.popup-validity strong { color: var(--text-secondary); }
+.popup-loading {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--text-muted); font-size: 12px; padding: 4px 0;
+}
+.popup-error { color: #f87171; font-size: 12px; padding: 4px 0; }
+
 /* Custom map markers */
 .custom-pin { background: transparent !important; border: none !important; }
 

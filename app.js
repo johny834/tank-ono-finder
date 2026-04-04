@@ -153,6 +153,16 @@ function initMap() {
     m.on('click', () => selectStation(s.id, true));
     stationMarkers[s.id] = m;
   });
+
+  map.on('popupclose', () => {
+    if (selectedId) {
+      const prev = selectedId;
+      selectedId = null;
+      refreshMarker(prev);
+      if (nearestId) refreshMarker(nearestId);
+      highlightListItem(null);
+    }
+  });
 }
 
 // ── Marker refresh ─────────────────────────────────────────────────────────
@@ -173,11 +183,10 @@ function selectStation(id, panMap) {
   if (prev && prev !== id) refreshMarker(prev);
   refreshMarker(id);
 
-  // Highlight nearest marker if it changed role
   if (nearestId && nearestId !== id && nearestId !== prev) refreshMarker(nearestId);
 
   const station = STATIONS.find(s => s.id === id);
-  renderSelectedPanel(station);
+  showStationPopup(station);
   highlightListItem(id);
 
   if (panMap) {
@@ -191,85 +200,86 @@ function clearSelection() {
   selectedId = null;
   refreshMarker(prev);
   if (nearestId) refreshMarker(nearestId);
-
-  document.getElementById('selected-placeholder').classList.remove('hidden');
-  document.getElementById('selected-info').classList.add('hidden');
+  map.closePopup();
   highlightListItem(null);
 }
 
-// ── Selected panel render ──────────────────────────────────────────────────
-function renderSelectedPanel(station) {
-  document.getElementById('selected-placeholder').classList.add('hidden');
-  document.getElementById('selected-info').classList.remove('hidden');
+// ── Popup render ───────────────────────────────────────────────────────────
+function buildPopupHTML(station) {
+  let html = '<div class="popup-inner">';
+  html += `<div class="popup-name">${esc(station.name)}</div>`;
 
-  document.getElementById('selected-name').textContent = station.name;
-
-  const distEl = document.getElementById('selected-distance');
+  // Chips (distance + nearest badge)
+  const chips = [];
   if (userLocation) {
     const d = distKm(userLocation.lat, userLocation.lng, station.lat, station.lng);
-    distEl.textContent = fmtDist(d);
-    distEl.style.display = '';
-  } else {
-    distEl.style.display = 'none';
+    chips.push(`<span class="chip dist-chip">${fmtDist(d)}</span>`);
+  }
+  if (station.id === nearestId) {
+    chips.push(`<span class="chip nearest-chip">⭐ Nejbližší</span>`);
+  }
+  if (chips.length) {
+    html += `<div class="popup-chips">${chips.join('')}</div>`;
   }
 
-  const badge = document.getElementById('nearest-badge');
-  if (station.id === nearestId) badge.classList.remove('hidden');
-  else badge.classList.add('hidden');
+  // Prices
+  if (!pricesFetched) {
+    html += `<div class="popup-loading"><span class="spinner"></span> Načítání cen…</div>`;
+  } else if (!prices || prices.error) {
+    html += `<div class="popup-error">⚠ Ceny nedostupné</div>`;
+  } else {
+    const allFuels = [
+      { key: 'natural95',        label: 'Natural 95',  primary: true },
+      { key: 'diesel',           label: 'Diesel',      primary: true },
+      { key: 'lpg',              label: 'LPG',         primary: true },
+      { key: 'natural95premium', label: 'Nat. 95+',    primary: false },
+      { key: 'natural98',        label: 'Natural 98',  primary: false },
+      { key: 'dieselplus',       label: 'Diesel+',     primary: false },
+      { key: 'adblue',           label: 'AdBlue',      primary: false },
+    ].filter(f => prices[f.key]);
 
-  renderPricesPanel();
+    if (allFuels.length) {
+      html += '<div class="popup-prices-grid">';
+      allFuels.forEach((f, i) => {
+        const highlight = f.primary && i === 0 ? ' highlight' : '';
+        const valClass = f.primary ? '' : ' secondary';
+        html += `<div class="popup-price-item${highlight}">
+          <div class="popup-price-label">${f.label}</div>
+          <div class="popup-price-value${valClass}">${prices[f.key]} <span class="popup-price-unit">Kč/l</span></div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+
+    if (prices.validity) {
+      html += `<div class="popup-validity"><strong>Platnost:</strong> ${prices.validity}</div>`;
+    }
+  }
+
+  html += '</div>';
+  return html;
 }
 
-// ── Prices panel render ────────────────────────────────────────────────────
-function renderPricesPanel() {
-  const panel = document.getElementById('prices-panel');
-  if (!pricesFetched) {
-    panel.innerHTML = `<div class="prices-loading"><span class="spinner"></span> Načítání cen…</div>`;
-    return;
+function showStationPopup(station) {
+  const marker = stationMarkers[station.id];
+  if (!marker) return;
+  marker.bindPopup(buildPopupHTML(station), {
+    maxWidth: 300,
+    minWidth: 220,
+    className: 'station-popup',
+    closeButton: true,
+  }).openPopup();
+}
+
+// Refresh open popup if prices arrive while it's open
+function refreshOpenPopup() {
+  if (!selectedId) return;
+  const station = STATIONS.find(s => s.id === selectedId);
+  if (!station) return;
+  const marker = stationMarkers[selectedId];
+  if (marker && marker.isPopupOpen()) {
+    marker.setPopupContent(buildPopupHTML(station));
   }
-  if (!prices || prices.error) {
-    panel.innerHTML = `<div class="prices-error">⚠ Ceny nedostupné</div>`;
-    return;
-  }
-
-  const primary = [
-    { key: 'natural95',  label: 'Natural 95' },
-    { key: 'diesel',     label: 'Diesel' },
-    { key: 'lpg',        label: 'LPG' },
-  ];
-  const secondary = [
-    { key: 'natural95premium', label: 'Nat. 95+' },
-    { key: 'natural98',        label: 'Natural 98' },
-    { key: 'dieselplus',       label: 'Diesel+' },
-    { key: 'adblue',           label: 'AdBlue' },
-  ].filter(f => prices[f.key]);
-
-  let html = `<div class="prices-grid primary">`;
-  primary.forEach(f => {
-    const val = prices[f.key];
-    html += `<div class="price-item primary">
-      <div class="price-label">${f.label}</div>
-      <div class="price-value">${val ?? '–'} <span class="price-unit">Kč/l</span></div>
-    </div>`;
-  });
-  html += `</div>`;
-
-  if (secondary.length) {
-    html += `<div class="prices-grid secondary">`;
-    secondary.forEach(f => {
-      html += `<div class="price-item secondary">
-        <div class="price-label">${f.label}</div>
-        <div class="price-value">${prices[f.key]} <span class="price-unit">Kč/l</span></div>
-      </div>`;
-    });
-    html += `</div>`;
-  }
-
-  if (prices.validity) {
-    html += `<div class="prices-validity"><strong>Platnost:</strong> ${prices.validity}</div>`;
-  }
-
-  panel.innerHTML = html;
 }
 
 // ── Station list render ────────────────────────────────────────────────────
@@ -450,8 +460,8 @@ async function fetchPrices() {
   } finally {
     pricesFetched = true;
     btn.classList.remove('spinning');
-    // Re-render prices panel if a station is selected
-    if (selectedId) renderPricesPanel();
+    // Re-render popup if a station is selected
+    refreshOpenPopup();
   }
 }
 
