@@ -379,7 +379,7 @@ function parsePrices(html) {
 }
 
 // ── History ────────────────────────────────────────────────
-let historyChart = null, historyCache = {}, currentRange = 'week';
+let historyChart = null, historyData = null, currentRange = 'week';
 const RANGE_DAYS = { week: 7, month: 30, half: 180 };
 
 const FUEL_META = {
@@ -392,44 +392,49 @@ const FUEL_META = {
   adblue:           { label: 'AdBlue',      color: '#64748b',  primary: false },
 };
 
-function openHistory() { document.getElementById('history-overlay').classList.remove('hidden'); switchHistoryTab(currentRange); }
+// Key mapping from compact JSON to app keys
+const KEY_MAP = { n95:'natural95', n95p:'natural95premium', n98:'natural98', die:'diesel', diep:'dieselplus', adb:'adblue', lpg:'lpg' };
+
+function openHistory() {
+  document.getElementById('history-overlay').classList.remove('hidden');
+  switchHistoryTab(currentRange);
+  if (!historyData) loadHistoryData();
+}
 function closeHistory(e) { if (e && e.target !== e.currentTarget) return; document.getElementById('history-overlay').classList.add('hidden'); }
+
+async function loadHistoryData() {
+  const st = document.getElementById('history-status');
+  st.textContent = 'Načítání…';
+  try {
+    const resp = await fetch('data/history.json?v=' + Date.now());
+    if (!resp.ok) throw new Error('fetch failed');
+    const json = await resp.json();
+    // Expand compact keys
+    historyData = json.prices.map(p => {
+      const out = { date: p.d };
+      for (const [short, long] of Object.entries(KEY_MAP)) {
+        out[long] = p[short] || null;
+      }
+      return out;
+    });
+    st.textContent = `${historyData.length} bodů · aktualizováno ${json.updated.slice(0, 10)}`;
+    switchHistoryTab(currentRange);
+  } catch (e) {
+    console.error('History load error:', e);
+    st.textContent = 'Historie nedostupná';
+  }
+}
 
 function switchHistoryTab(range) {
   currentRange = range;
   document.querySelectorAll('.htab').forEach(el => el.classList.toggle('active', el.dataset.range === range));
-  loadHistory(range);
-}
-
-async function loadHistory(range) {
-  const st = document.getElementById('history-status');
-  st.textContent = 'Načítání…';
-  if (historyCache[range]) { renderHistoryChart(historyCache[range]); st.textContent = `${historyCache[range].length} bodů`; return; }
-
-  const days = RANGE_DAYS[range], step = range === 'half' ? 3 : 1;
-  const pts = [], now = new Date(), total = Math.ceil(days / step);
-  let done = 0;
-
-  for (let d = days; d >= 0; d -= step) {
-    const dt = new Date(now); dt.setDate(dt.getDate() - d);
-    const dd = String(dt.getDate()).padStart(2,'0'), mm = String(dt.getMonth()+1).padStart(2,'0'), yy = dt.getFullYear();
-    try {
-      const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
-        method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body: `txtDate=${dd}/${mm}/${yy}&hod=12&min=00`,
-      });
-      if (!r.ok) throw 0;
-      const p = parsePrices(await r.text());
-      if (p && !p.error) pts.push({ date: `${dd}.${mm}.`, ...p });
-    } catch {}
-    done++;
-    st.textContent = `${done}/${total}…`;
-    if (d > 0) await new Promise(r => setTimeout(r, 250));
-  }
-
-  historyCache[range] = pts;
-  renderHistoryChart(pts);
-  st.textContent = `${pts.length} bodů`;
+  if (!historyData) return;
+  const days = RANGE_DAYS[range];
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const filtered = historyData.filter(d => d.date >= cutoffStr);
+  renderHistoryChart(filtered);
+  document.getElementById('history-status').textContent = `${filtered.length} bodů`;
 }
 
 function pf(v) { return (!v || v === ',') ? null : parseFloat(v.replace(',','.')); }
@@ -449,7 +454,7 @@ function renderHistoryChart(data) {
   historyChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: data.map(d => d.date),
+      labels: data.map(d => { const p = d.date.split('-'); return `${p[2]}.${p[1]}.`; }),
       datasets: active.map(k => {
         const m = FUEL_META[k];
         return {
