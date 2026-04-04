@@ -497,20 +497,20 @@ function parsePrices(html) {
 
   const getCell = idx => {
     if (idx >= cells.length) return null;
-    const raw = cells[idx].textContent.trim();
-    if (!raw || raw === '–' || raw === '-') return null;
-    // Normalise Czech decimal comma: "38,90" → "38,90" (keep as-is for display)
+    const raw = cells[idx].textContent.replace(/\s+/g, '').trim();
+    if (!raw || raw === '–' || raw === '-' || raw === ',') return null;
     return raw;
   };
 
+  // Column indices (0 = label like "CZK"/"Kč", then 1=N91, 2=N95, 3=N95P, 4=N98, 5=E85, 6=Diesel, 7=EcoDiesel, 8=Diesel+, 9=AdBlue, 10=LPG)
   const result = {
-    natural95:        getCell(1),
-    natural95premium: getCell(2),
-    natural98:        getCell(3),
-    diesel:           getCell(5),
-    dieselplus:       getCell(7),
-    adblue:           getCell(8),
-    lpg:              getCell(9),
+    natural95:        getCell(2),
+    natural95premium: getCell(3),
+    natural98:        getCell(4),
+    diesel:           getCell(6),
+    dieselplus:       getCell(8),
+    adblue:           getCell(9),
+    lpg:              getCell(10),
     validity,
   };
 
