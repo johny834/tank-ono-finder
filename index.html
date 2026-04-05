@@ -39,15 +39,62 @@
     </div>
   </header>
 
-  <!-- Station list panel (floating) -->
+  <!-- Side panel (desktop) -->
   <div id="panel">
-    <div id="panel-toggle" onclick="togglePanel()">
-      <svg id="panel-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-      <span id="panel-label">Stanice</span>
-      <span id="panel-count"></span>
+    <!-- Station detail card (shown when station selected) -->
+    <div id="detail" class="hidden">
+      <div id="detail-head">
+        <div>
+          <div id="detail-name"></div>
+          <div id="detail-chips"></div>
+        </div>
+        <button id="detail-close" onclick="clearSelection()" title="Zavřít">&times;</button>
+      </div>
+      <div id="detail-prices"></div>
+      <div id="detail-actions">
+        <button id="detail-nav-btn" onclick="navigateToStation()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+          Navigovat
+        </button>
+        <button id="detail-history-btn" onclick="openHistory()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Historie
+        </button>
+      </div>
     </div>
-    <div id="panel-body">
+
+    <!-- Station list -->
+    <div id="list-section">
+      <div id="list-header">
+        <span id="list-title">Stanice</span>
+        <span id="list-meta"></span>
+      </div>
       <div id="station-list"></div>
+    </div>
+  </div>
+
+  <!-- Bottom sheet (mobile) -->
+  <div id="sheet" class="hidden">
+    <div id="sheet-handle" onclick="toggleSheet()"><div class="handle-bar"></div></div>
+    <div id="sheet-content">
+      <div id="sheet-head">
+        <div>
+          <div id="sheet-name"></div>
+          <div id="sheet-chips"></div>
+        </div>
+        <button id="sheet-close" onclick="clearSelection()">&times;</button>
+      </div>
+      <div id="sheet-prices"></div>
+      <div id="sheet-actions">
+        <button onclick="navigateToStation()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+          Navigovat
+        </button>
+        <button onclick="openHistory()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Historie
+        </button>
+      </div>
     </div>
   </div>
 

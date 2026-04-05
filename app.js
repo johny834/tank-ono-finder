@@ -1,7 +1,8 @@
 'use strict';
 
 /* ═══════════════════════════════════════════════════════════
-   Tank ONO Finder — App Logic
+   Tank ONO Finder — App Logic v2
+   Desktop: side panel detail | Mobile: bottom sheet
    ═══════════════════════════════════════════════════════════ */
 
 // ── Station data ───────────────────────────────────────────
@@ -63,27 +64,35 @@ let nearestId = null;
 let userLocation = null;
 let prices = null;
 let pricesFetched = false;
-let panelOpen = true;
+
+// ── Helpers ────────────────────────────────────────────────
+function isMobile() { return window.innerWidth <= 700; }
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function distKm(a, b, c, d) {
+  const R = 6371, p = Math.PI / 180;
+  const dLat = (c - a) * p, dLng = (d - b) * p;
+  const x = Math.sin(dLat/2)**2 + Math.cos(a*p) * Math.cos(c*p) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.asin(Math.sqrt(x));
+}
+function fmtDist(km) { return km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1).replace('.',',')} km`; }
 
 // ── Theme ──────────────────────────────────────────────────
 const TILES = {
   light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
   dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
 };
-
-function getTheme() {
-  return document.documentElement.getAttribute('data-theme') || 'light';
-}
-
+function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
 function toggleTheme() {
   const next = getTheme() === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('tank-ono-theme', next);
   setTileLayer(next);
-  // Refresh chart colors if open
-  if (historyChart) renderHistoryChart(historyCache[currentRange] || []);
+  if (historyChart && historyData) {
+    const days = RANGE_DAYS[currentRange];
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+    renderHistoryChart(historyData.filter(d => d.date >= cutoff.toISOString().slice(0,10)));
+  }
 }
-
 function setTileLayer(theme) {
   if (tileLayer) map.removeLayer(tileLayer);
   tileLayer = L.tileLayer(TILES[theme], {
@@ -92,55 +101,27 @@ function setTileLayer(theme) {
   }).addTo(map);
 }
 
-// ── Panel toggle ───────────────────────────────────────────
-function togglePanel() {
-  panelOpen = !panelOpen;
-  document.getElementById('panel').classList.toggle('collapsed', !panelOpen);
-}
-
 // ── Markers ────────────────────────────────────────────────
-const PIN_COLORS = { normal: '#e5760a', nearest: '#16a34a', selected: '#f59e0b' };
-
-function pinColor(id) {
-  if (id === selectedId) return PIN_COLORS.selected;
-  if (id === nearestId) return PIN_COLORS.nearest;
-  return PIN_COLORS.normal;
-}
-
+const PIN = { normal: '#e5760a', nearest: '#16a34a', selected: '#f59e0b' };
+function pinColor(id) { return id === selectedId ? PIN.selected : id === nearestId ? PIN.nearest : PIN.normal; }
 function buildPin(id) {
-  const c = pinColor(id);
-  const big = id === selectedId || id === nearestId;
-  const sz = big ? 28 : 22;
-  const h = Math.round(sz * 1.4);
-  const cx = sz / 2, cy = sz / 2, r = Math.round(sz * 0.2);
-  const svg = `<svg width="${sz}" height="${h}" viewBox="0 0 ${sz} ${h}" xmlns="http://www.w3.org/2000/svg">
-    <path d="M${cx} 0C${cx*.4} 0 0 ${cy*.4} 0 ${cy} 0 ${cy*1.7} ${cx} ${h} ${cx} ${h}S${sz} ${cy*1.7} ${sz} ${cy} ${cx*1.6} 0 ${cx} 0Z" fill="${c}" stroke="white" stroke-width="1.5"/>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="white"/>
-  </svg>`;
+  const c = pinColor(id), big = id === selectedId || id === nearestId;
+  const sz = big ? 28 : 22, h = Math.round(sz * 1.4);
+  const cx = sz/2, cy = sz/2, r = Math.round(sz * .2);
   return L.divIcon({
-    html: svg, className: 'custom-pin',
-    iconSize: [sz, h], iconAnchor: [sz/2, h], popupAnchor: [0, -h],
+    html: `<svg width="${sz}" height="${h}" viewBox="0 0 ${sz} ${h}" xmlns="http://www.w3.org/2000/svg">
+      <path d="M${cx} 0C${cx*.4} 0 0 ${cy*.4} 0 ${cy} 0 ${cy*1.7} ${cx} ${h} ${cx} ${h}S${sz} ${cy*1.7} ${sz} ${cy} ${cx*1.6} 0 ${cx} 0Z" fill="${c}" stroke="white" stroke-width="1.5"/>
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="white"/></svg>`,
+    className: 'custom-pin', iconSize: [sz,h], iconAnchor: [sz/2,h],
   });
 }
-
 function refreshMarker(id) {
-  const m = stationMarkers[id];
-  if (!m) return;
+  const m = stationMarkers[id]; if (!m) return;
   m.setIcon(buildPin(id));
   m.setZIndexOffset(id === selectedId ? 2000 : id === nearestId ? 1000 : 0);
 }
 
-// ── Distance ───────────────────────────────────────────────
-function distKm(a, b, c, d) {
-  const R = 6371, p = Math.PI / 180;
-  const dLat = (c - a) * p, dLng = (d - b) * p;
-  const x = Math.sin(dLat/2)**2 + Math.cos(a*p) * Math.cos(c*p) * Math.sin(dLng/2)**2;
-  return R * 2 * Math.asin(Math.sqrt(x));
-}
-function fmtDist(km) { return km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1).replace('.',',')} km`; }
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-// ── Map init ───────────────────────────────────────────────
+// ── Map ────────────────────────────────────────────────────
 function initMap() {
   map = L.map('map', { center: [49.85, 15.55], zoom: 7, zoomControl: false, attributionControl: true });
   L.control.zoom({ position: 'bottomright' }).addTo(map);
@@ -152,17 +133,51 @@ function initMap() {
     stationMarkers[s.id] = m;
   });
 
-  map.on('popupclose', () => {
-    if (!selectedId) return;
-    const prev = selectedId;
-    selectedId = null;
-    refreshMarker(prev);
-    if (nearestId) refreshMarker(nearestId);
-    highlightListItem(null);
+  // Click empty map → deselect
+  map.on('click', (e) => {
+    // Only if not clicking a marker
+    if (e.originalEvent && e.originalEvent.target.closest('.custom-pin')) return;
+    clearSelection();
   });
 }
 
-// ── Selection ──────────────────────────────────────────────
+// ── Prices HTML (shared between desktop & mobile) ──────────
+function buildPricesHTML() {
+  if (!pricesFetched) return '<div class="prices-loading"><span class="spinner"></span> Načítání cen…</div>';
+  if (!prices || prices.error) return '<div class="prices-error">⚠ Ceny nedostupné</div>';
+
+  const fuels = [
+    { k:'natural95', l:'Natural 95', p:true },
+    { k:'diesel', l:'Diesel', p:true },
+    { k:'lpg', l:'LPG', p:true },
+    { k:'natural95premium', l:'Nat. 95+', p:false },
+    { k:'natural98', l:'Natural 98', p:false },
+    { k:'dieselplus', l:'Diesel+', p:false },
+    { k:'adblue', l:'AdBlue', p:false },
+  ].filter(f => prices[f.k]);
+
+  if (!fuels.length) return '<div class="prices-error">⚠ Ceny nedostupné</div>';
+
+  let h = '<div class="prices-grid">';
+  fuels.forEach(f => {
+    h += `<div class="fuel-card${f.p ? ' primary' : ''}">
+      <div class="fuel-label">${f.l}</div>
+      <div class="fuel-val">${prices[f.k]} <span class="fuel-unit">Kč</span></div>
+    </div>`;
+  });
+  h += '</div>';
+  if (prices.validity) h += `<div class="prices-validity">Platnost: ${prices.validity}</div>`;
+  return h;
+}
+
+function buildChipsHTML(station) {
+  const chips = [];
+  if (userLocation) chips.push(`<span class="chip dist-chip">${fmtDist(distKm(userLocation.lat, userLocation.lng, station.lat, station.lng))}</span>`);
+  if (station.id === nearestId) chips.push(`<span class="chip nearest-chip">⭐ Nejbližší</span>`);
+  return chips.join('');
+}
+
+// ── Selection (core) ───────────────────────────────────────
 function selectStation(id, pan) {
   const prev = selectedId;
   selectedId = id;
@@ -171,67 +186,104 @@ function selectStation(id, pan) {
   if (nearestId && nearestId !== id && nearestId !== prev) refreshMarker(nearestId);
 
   const s = STATIONS.find(x => x.id === id);
-  showPopup(s);
+  showDetail(s);
   highlightListItem(id);
-  if (pan) map.panTo([s.lat, s.lng], { animate: true, duration: .5 });
-}
 
-// ── Popup ──────────────────────────────────────────────────
-function popupHTML(s) {
-  let h = `<div class="popup-inner"><div class="popup-name">${esc(s.name)}</div>`;
-
-  // Chips
-  const chips = [];
-  if (userLocation) chips.push(`<span class="chip dist-chip">${fmtDist(distKm(userLocation.lat, userLocation.lng, s.lat, s.lng))}</span>`);
-  if (s.id === nearestId) chips.push(`<span class="chip nearest-chip">⭐ Nejbližší</span>`);
-  if (chips.length) h += `<div class="popup-chips">${chips.join('')}</div>`;
-
-  if (!pricesFetched) {
-    h += `<div class="popup-loading"><span class="spinner"></span> Načítání cen…</div>`;
-  } else if (!prices || prices.error) {
-    h += `<div class="popup-error">⚠ Ceny nedostupné</div>`;
-  } else {
-    const fuels = [
-      { k:'natural95', l:'Natural 95', p:true },
-      { k:'diesel', l:'Diesel', p:true },
-      { k:'lpg', l:'LPG', p:true },
-      { k:'natural95premium', l:'Nat. 95+', p:false },
-      { k:'natural98', l:'Natural 98', p:false },
-      { k:'dieselplus', l:'Diesel+', p:false },
-      { k:'adblue', l:'AdBlue', p:false },
-    ].filter(f => prices[f.k]);
-
-    if (fuels.length) {
-      h += '<div class="popup-prices">';
-      fuels.forEach(f => {
-        h += `<div class="popup-fuel${f.p ? ' primary' : ''}">
-          <div class="popup-fuel-label">${f.l}</div>
-          <div class="popup-fuel-val">${prices[f.k]} <span class="popup-fuel-unit">Kč</span></div>
-        </div>`;
-      });
-      h += '</div>';
+  if (pan) {
+    // On desktop, offset map center to account for side panel
+    if (!isMobile()) {
+      const panelW = 320;
+      const point = map.latLngToContainerPoint([s.lat, s.lng]);
+      const offset = L.point(panelW / 2, 0);
+      const target = map.containerPointToLatLng(point.subtract(offset));
+      map.panTo(target, { animate: true, duration: .4 });
+    } else {
+      map.panTo([s.lat, s.lng], { animate: true, duration: .4 });
     }
-    if (prices.validity) h += `<div class="popup-validity">Platnost: ${prices.validity}</div>`;
-
-    h += `<button class="popup-history-btn" onclick="openHistory()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      Historie cen</button>`;
   }
-  h += '</div>';
-  return h;
 }
 
-function showPopup(s) {
-  const m = stationMarkers[s.id];
-  if (!m) return;
-  m.bindPopup(popupHTML(s), { maxWidth: 280, minWidth: 200, className: 'station-popup', closeButton: true }).openPopup();
+function clearSelection() {
+  if (!selectedId) return;
+  const prev = selectedId;
+  selectedId = null;
+  refreshMarker(prev);
+  if (nearestId) refreshMarker(nearestId);
+  hideDetail();
+  highlightListItem(null);
 }
 
-function refreshOpenPopup() {
+// ── Detail display (responsive) ────────────────────────────
+function showDetail(station) {
+  if (isMobile()) {
+    showSheet(station);
+  } else {
+    showPanel(station);
+  }
+}
+
+function hideDetail() {
+  // Desktop panel
+  document.getElementById('detail').classList.add('hidden');
+  // Mobile sheet
+  const sheet = document.getElementById('sheet');
+  sheet.classList.remove('visible');
+  sheet.classList.add('hidden');
+}
+
+// Desktop side panel detail
+function showPanel(station) {
+  const el = document.getElementById('detail');
+  el.classList.remove('hidden');
+  document.getElementById('detail-name').textContent = station.name;
+  document.getElementById('detail-chips').innerHTML = buildChipsHTML(station);
+  document.getElementById('detail-prices').innerHTML = buildPricesHTML();
+}
+
+// Mobile bottom sheet
+function showSheet(station) {
+  const sheet = document.getElementById('sheet');
+  sheet.classList.remove('hidden');
+  sheet.classList.add('visible');
+  document.getElementById('sheet-name').textContent = station.name;
+  document.getElementById('sheet-chips').innerHTML = buildChipsHTML(station);
+  document.getElementById('sheet-prices').innerHTML = buildPricesHTML();
+}
+
+function toggleSheet() {
+  const sheet = document.getElementById('sheet');
+  if (sheet.classList.contains('expanded')) {
+    sheet.classList.remove('expanded');
+  } else {
+    sheet.classList.add('expanded');
+  }
+}
+
+// Refresh detail if prices arrive while station is selected
+function refreshDetail() {
   if (!selectedId) return;
   const s = STATIONS.find(x => x.id === selectedId);
-  const m = stationMarkers[selectedId];
-  if (s && m && m.isPopupOpen()) m.setPopupContent(popupHTML(s));
+  if (!s) return;
+  if (isMobile()) {
+    const sheet = document.getElementById('sheet');
+    if (sheet.classList.contains('visible')) {
+      document.getElementById('sheet-prices').innerHTML = buildPricesHTML();
+    }
+  } else {
+    const detail = document.getElementById('detail');
+    if (!detail.classList.contains('hidden')) {
+      document.getElementById('detail-prices').innerHTML = buildPricesHTML();
+    }
+  }
+}
+
+// Navigate to station via Google Maps
+function navigateToStation() {
+  if (!selectedId) return;
+  const s = STATIONS.find(x => x.id === selectedId);
+  if (!s) return;
+  const url = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
+  window.open(url, '_blank');
 }
 
 // ── Station list ───────────────────────────────────────────
@@ -243,7 +295,7 @@ function renderList() {
   } else {
     sorted.forEach(s => { s._d = null; });
   }
-  document.getElementById('panel-count').textContent = userLocation ? 'dle vzdálenosti' : `${STATIONS.length} stanic`;
+  document.getElementById('list-meta').textContent = userLocation ? 'dle vzdálenosti' : `${STATIONS.length} stanic`;
 
   document.getElementById('station-list').innerHTML = sorted.map(s => {
     const near = s.id === nearestId;
@@ -275,7 +327,6 @@ function triggerGeolocation() {
   document.getElementById('locate-btn').classList.add('locating');
   navigator.geolocation.getCurrentPosition(onGeoOk, onGeoErr, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
 }
-
 function onGeoOk(pos) {
   document.getElementById('locate-btn').classList.remove('locating');
   document.getElementById('geo-notice').classList.add('hidden');
@@ -302,12 +353,10 @@ function onGeoOk(pos) {
     map.flyTo([best.lat, best.lng], 12, { animate: true, duration: 1 });
   }
 }
-
 function onGeoErr() {
   document.getElementById('locate-btn').classList.remove('locating');
   document.getElementById('geo-notice').classList.remove('hidden');
 }
-
 function requestGeo() {
   if (!navigator.geolocation) { document.getElementById('geo-notice').classList.remove('hidden'); return; }
   triggerGeolocation();
@@ -318,17 +367,14 @@ async function fetchPrices() {
   const statusEl = document.getElementById('price-status');
   const dot = document.getElementById('price-dot');
   const btn = document.getElementById('refresh-btn');
-  statusEl.textContent = 'Načítání…';
-  dot.className = 'loading';
-  btn.classList.add('spinning');
+  statusEl.textContent = 'Načítání…'; dot.className = 'loading'; btn.classList.add('spinning');
   pricesFetched = false;
 
   try {
     const now = new Date();
     const body = new URLSearchParams({
       txtDate: `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`,
-      hod: String(now.getHours()),
-      min: String(now.getMinutes()).padStart(2,'0'),
+      hod: String(now.getHours()), min: String(now.getMinutes()).padStart(2,'0'),
     });
     const resp = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString(),
@@ -340,7 +386,8 @@ async function fetchPrices() {
   } catch (e) {
     console.error(e); prices = { error: true }; statusEl.textContent = 'Nedostupné'; dot.className = 'error';
   } finally {
-    pricesFetched = true; btn.classList.remove('spinning'); refreshOpenPopup();
+    pricesFetched = true; btn.classList.remove('spinning');
+    refreshDetail();
   }
 }
 
@@ -360,8 +407,7 @@ function parsePrices(html) {
   for (const row of table.querySelectorAll('tr')) {
     const tds = Array.from(row.querySelectorAll('td'));
     if (!tds.length) continue;
-    const lbl = tds[0].textContent.trim();
-    if (/^K[čc]$/i.test(lbl) || /^CZK$/i.test(lbl)) { cells = tds; break; }
+    if (/^K[čc]$/i.test(tds[0].textContent.trim()) || /^CZK$/i.test(tds[0].textContent.trim())) { cells = tds; break; }
   }
   if (!cells) for (const row of table.querySelectorAll('tr')) {
     const tds = Array.from(row.querySelectorAll('td'));
@@ -381,7 +427,6 @@ function parsePrices(html) {
 // ── History ────────────────────────────────────────────────
 let historyChart = null, historyData = null, currentRange = 'week';
 const RANGE_DAYS = { week: 7, month: 30, half: 180 };
-
 const FUEL_META = {
   natural95:        { label: 'Natural 95',  color: '#e5760a',  primary: true },
   diesel:           { label: 'Diesel',      color: '#2563eb',  primary: true },
@@ -391,8 +436,6 @@ const FUEL_META = {
   dieselplus:       { label: 'Diesel+',     color: '#06b6d4',  primary: false },
   adblue:           { label: 'AdBlue',      color: '#64748b',  primary: false },
 };
-
-// Key mapping from compact JSON to app keys
 const KEY_MAP = { n95:'natural95', n95p:'natural95premium', n98:'natural98', die:'diesel', diep:'dieselplus', adb:'adblue', lpg:'lpg' };
 
 function openHistory() {
@@ -409,12 +452,9 @@ async function loadHistoryData() {
     const resp = await fetch('data/history.json?v=' + Date.now());
     if (!resp.ok) throw new Error('fetch failed');
     const json = await resp.json();
-    // Expand compact keys
     historyData = json.prices.map(p => {
       const out = { date: p.d };
-      for (const [short, long] of Object.entries(KEY_MAP)) {
-        out[long] = p[short] || null;
-      }
+      for (const [short, long] of Object.entries(KEY_MAP)) out[long] = p[short] || null;
       return out;
     });
     st.textContent = `${historyData.length} bodů · aktualizováno ${json.updated.slice(0, 10)}`;
@@ -429,10 +469,8 @@ function switchHistoryTab(range) {
   currentRange = range;
   document.querySelectorAll('.htab').forEach(el => el.classList.toggle('active', el.dataset.range === range));
   if (!historyData) return;
-  const days = RANGE_DAYS[range];
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  const filtered = historyData.filter(d => d.date >= cutoffStr);
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
+  const filtered = historyData.filter(d => d.date >= cutoff.toISOString().slice(0,10));
   renderHistoryChart(filtered);
   document.getElementById('history-status').textContent = `${filtered.length} bodů`;
 }
@@ -447,7 +485,6 @@ function renderHistoryChart(data) {
   const dark = getTheme() === 'dark';
   const gridC = dark ? 'rgba(42,46,62,.6)' : 'rgba(226,229,236,.7)';
   const tickC = dark ? '#5c6280' : '#8990a5';
-
   const keys = Object.keys(FUEL_META);
   const active = keys.filter(k => data.some(d => pf(d[k]) !== null));
 
@@ -462,8 +499,7 @@ function renderHistoryChart(data) {
           borderColor: m.color, backgroundColor: m.color + '18',
           borderWidth: m.primary ? 2.5 : 1.5,
           pointRadius: data.length > 30 ? 0 : 3, pointHoverRadius: 5,
-          tension: .3, fill: false, spanGaps: true,
-          hidden: !m.primary,
+          tension: .3, fill: false, spanGaps: true, hidden: !m.primary,
         };
       }),
     },
@@ -473,10 +509,8 @@ function renderHistoryChart(data) {
       plugins: {
         legend: { position: 'bottom', labels: { color: tickC, font: { size: 11 }, boxWidth: 12, padding: 10, usePointStyle: true } },
         tooltip: {
-          backgroundColor: dark ? '#181b25' : '#fff',
-          titleColor: dark ? '#e4e6f0' : '#1a1d26',
-          bodyColor: dark ? '#9298b4' : '#4b5068',
-          borderColor: dark ? '#2a2e3e' : '#e2e5ec',
+          backgroundColor: dark ? '#181b25' : '#fff', titleColor: dark ? '#e4e6f0' : '#1a1d26',
+          bodyColor: dark ? '#9298b4' : '#4b5068', borderColor: dark ? '#2a2e3e' : '#e2e5ec',
           borderWidth: 1, padding: 10,
           callbacks: { label: c => c.parsed.y === null ? null : ` ${c.dataset.label}: ${c.parsed.y.toFixed(2).replace('.',',')} Kč/l` },
         },
@@ -489,12 +523,28 @@ function renderHistoryChart(data) {
   });
 }
 
+// ── Responsive: re-route detail on resize ──────────────────
+let wasMobile = null;
+function handleResize() {
+  const mobile = isMobile();
+  if (wasMobile === mobile) return;
+  wasMobile = mobile;
+  // Re-show detail in correct container if station is selected
+  if (selectedId) {
+    hideDetail();
+    const s = STATIONS.find(x => x.id === selectedId);
+    if (s) showDetail(s);
+  }
+}
+
 // ── Boot ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Restore theme
   const saved = localStorage.getItem('tank-ono-theme');
   if (saved) document.documentElement.setAttribute('data-theme', saved);
   else if (window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+
+  wasMobile = isMobile();
+  window.addEventListener('resize', handleResize);
 
   initMap();
   renderList();
