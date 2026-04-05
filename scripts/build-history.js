@@ -13,7 +13,7 @@ const API = 'https://tank-ono.cz/cz/index.php?page=archiv';
 const DAYS = 180;
 const STEP = 1;           // every day (dedup removes duplicates anyway)
 const CONCURRENCY = 5;    // parallel requests
-const DELAY_MS = 200;     // delay between batches
+const DELAY_MS = 500;     // delay between batches (respectful)
 
 async function fetchDay(date) {
   const dd = String(date.getDate()).padStart(2, '0');
@@ -23,7 +23,11 @@ async function fetchDay(date) {
 
   const resp = await fetch(API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (compatible; TankONOFinder/1.0)',
+      'Accept': 'text/html',
+    },
     body,
   });
   if (!resp.ok) return null;

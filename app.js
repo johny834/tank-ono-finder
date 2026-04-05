@@ -449,9 +449,11 @@ async function loadHistoryData() {
   const st = document.getElementById('history-status');
   st.textContent = 'Načítání…';
   try {
+    // Try static JSON first
     const resp = await fetch('data/history.json?v=' + Date.now());
     if (!resp.ok) throw new Error('fetch failed');
     const json = await resp.json();
+    if (!json.prices || json.prices.length === 0) throw new Error('empty data');
     historyData = json.prices.map(p => {
       const out = { date: p.d };
       for (const [short, long] of Object.entries(KEY_MAP)) out[long] = p[short] || null;
@@ -460,7 +462,41 @@ async function loadHistoryData() {
     st.textContent = `${historyData.length} bodů · aktualizováno ${json.updated.slice(0, 10)}`;
     switchHistoryTab(currentRange);
   } catch (e) {
-    console.error('History load error:', e);
+    console.warn('Static history failed, falling back to live fetch:', e.message);
+    await loadHistoryLive();
+  }
+}
+
+// Fallback: fetch last 7 days live via CORS proxy
+async function loadHistoryLive() {
+  const st = document.getElementById('history-status');
+  const pts = [], now = new Date();
+  for (let d = 7; d >= 0; d--) {
+    const dt = new Date(now); dt.setDate(dt.getDate() - d);
+    const dd = String(dt.getDate()).padStart(2,'0'), mm = String(dt.getMonth()+1).padStart(2,'0'), yy = dt.getFullYear();
+    try {
+      st.textContent = `Načítání: ${8-d}/8…`;
+      const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
+        method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body: `txtDate=${dd}/${mm}/${yy}&hod=12&min=00`,
+      });
+      if (!r.ok) continue;
+      const p = parsePrices(await r.text());
+      if (p && !p.error) {
+        const out = { date: `${yy}-${mm}-${dd}` };
+        out.natural95 = p.natural95; out.natural95premium = p.natural95premium;
+        out.natural98 = p.natural98; out.diesel = p.diesel;
+        out.dieselplus = p.dieselplus; out.adblue = p.adblue; out.lpg = p.lpg;
+        pts.push(out);
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 300));
+  }
+  if (pts.length) {
+    historyData = pts;
+    st.textContent = `${pts.length} bodů (live)`;
+    switchHistoryTab('week');
+  } else {
     st.textContent = 'Historie nedostupná';
   }
 }
