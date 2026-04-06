@@ -106,7 +106,7 @@ const PIN = { normal: '#e5760a', nearest: '#16a34a', selected: '#f59e0b' };
 function pinColor(id) { return id === selectedId ? PIN.selected : id === nearestId ? PIN.nearest : PIN.normal; }
 function buildPin(id) {
   const c = pinColor(id), big = id === selectedId || id === nearestId;
-  const sz = big ? 28 : 22, h = Math.round(sz * 1.4);
+  const sz = big ? 36 : 30, h = Math.round(sz * 1.4);
   const cx = sz/2, cy = sz/2, r = Math.round(sz * .2);
   return L.divIcon({
     html: `<svg width="${sz}" height="${h}" viewBox="0 0 ${sz} ${h}" xmlns="http://www.w3.org/2000/svg">
