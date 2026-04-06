@@ -508,7 +508,61 @@ function switchHistoryTab(range) {
   const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
   const filtered = historyData.filter(d => d.date >= cutoff.toISOString().slice(0,10));
   renderHistoryChart(filtered);
+  renderHistorySummary(filtered);
   document.getElementById('history-status').textContent = `${filtered.length} bodů`;
+}
+
+function fmtDate(iso) { const p = iso.split('-'); return `${p[2]}.${p[1]}.${p[0]}`; }
+
+function renderHistorySummary(data) {
+  const el = document.getElementById('history-summary');
+  if (!data || data.length < 2) { el.innerHTML = ''; return; }
+
+  const primaryFuels = Object.entries(FUEL_META).filter(([,m]) => m.primary);
+  let html = '';
+
+  for (const [key, meta] of primaryFuels) {
+    // Period change: first vs last value in filtered range
+    const vals = data.map(d => ({ date: d.date, v: pf(d[key]) })).filter(x => x.v !== null);
+    if (vals.length < 2) continue;
+
+    const first = vals[0], last = vals[vals.length - 1];
+    const diff = last.v - first.v;
+    const pct = ((diff / first.v) * 100);
+    const sign = diff > 0 ? '+' : '';
+    const cls = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat';
+
+    // Last price change: find last day where price differs from previous day
+    let lastChangeDate = null, lastChangeDiff = null;
+    for (let i = vals.length - 1; i >= 1; i--) {
+      const d = Math.round((vals[i].v - vals[i-1].v) * 100) / 100;
+      if (d !== 0) {
+        lastChangeDate = vals[i].date;
+        lastChangeDiff = d;
+        break;
+      }
+    }
+
+    let lastChangeHtml = '';
+    if (lastChangeDate && lastChangeDiff !== null) {
+      const lcSign = lastChangeDiff > 0 ? '+' : '';
+      const lcCls = lastChangeDiff > 0 ? 'up' : 'down';
+      lastChangeHtml = `<div class="hs-last">Poslední změna: ${fmtDate(lastChangeDate)} <span class="hs-last-val ${lcCls}">${lcSign}${lastChangeDiff.toFixed(2).replace('.',',')} Kč</span></div>`;
+    } else {
+      lastChangeHtml = `<div class="hs-last">Bez změny v období</div>`;
+    }
+
+    html += `<div class="hs-card">
+      <div class="hs-fuel" style="color:${meta.color}">${meta.label}</div>
+      <div class="hs-row">
+        <span class="hs-delta ${cls}">${sign}${pct.toFixed(1).replace('.',',')} %</span>
+        <span class="hs-nom">${sign}${diff.toFixed(2).replace('.',',')} Kč</span>
+      </div>
+      ${lastChangeHtml}
+    </div>`;
+  }
+
+  el.innerHTML = html;
 }
 
 function pf(v) { return (!v || v === ',') ? null : parseFloat(v.replace(',','.')); }
