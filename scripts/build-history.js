@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Fetches Tank ONO price history for the last 180 days,
- * deduplicates by validity period, and writes data/history.json.
+ * Fetches Tank ONO daily price snapshots for the last 180 days
+ * and writes data/history.json.
  *
  * Run: node scripts/build-history.js
  */
@@ -11,7 +11,7 @@ const path = require('path');
 
 const API = 'https://tank-ono.cz/cz/index.php?page=archiv';
 const DAYS = 180;
-const STEP = 1;           // every day (dedup removes duplicates anyway)
+const STEP = 1;           // every day
 const CONCURRENCY = 5;    // parallel requests
 const DELAY_MS = 500;     // delay between batches (respectful)
 
@@ -124,19 +124,10 @@ async function main() {
     if (i + CONCURRENCY < allDates.length) await new Promise(r => setTimeout(r, DELAY_MS));
   }
 
-  console.log(`\nFetched ${results.length} raw data points.`);
+  console.log(`\nFetched ${results.length} daily data points.`);
 
-  // Deduplicate by validity period
-  const deduped = [];
-  const seen = new Set();
-  for (const r of results) {
-    const key = r.vf || `${r.d}:${r.n95}:${r.die}:${r.lpg}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(r);
-  }
-
-  console.log(`Deduplicated to ${deduped.length} unique price periods.`);
+  const snapshots = results.sort((a, b) => a.d.localeCompare(b.d));
+  console.log(`Using ${snapshots.length} daily snapshots.`);
 
   const outDir = path.join(__dirname, '..', 'data');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
@@ -147,12 +138,12 @@ async function main() {
   const lastValid = readJsonIfExists(fallbackFile);
 
   let output;
-  if (deduped.length > 0) {
+  if (snapshots.length > 0) {
     output = {
       updated: new Date().toISOString(),
       days: DAYS,
-      count: deduped.length,
-      prices: deduped,
+      count: snapshots.length,
+      prices: snapshots,
     };
     fs.writeFileSync(outFile, JSON.stringify(output));
     fs.writeFileSync(fallbackFile, JSON.stringify(output));
