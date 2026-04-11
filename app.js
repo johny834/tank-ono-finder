@@ -422,6 +422,9 @@ function parsePrices(html) {
 
 // ── History ────────────────────────────────────────────────
 let historyChart = null, historyData = null, currentRange = 'week';
+let historySource = null;
+let historyLoadingPromise = null;
+let historyLoadedRange = null;
 const RANGE_DAYS = { week: 7, month: 30, half: 180 };
 
 function getHistoryCutoffDate(range) {
@@ -445,43 +448,58 @@ const KEY_MAP = { n95:'natural95', n95p:'natural95premium', n98:'natural98', die
 function openHistory() {
   document.getElementById('history-overlay').classList.remove('hidden');
   switchHistoryTab(currentRange);
-  if (!historyData) loadHistoryData();
+  if (!historyData && !historyLoadingPromise) loadHistoryData('week');
 }
 function closeHistory(e) { if (e && e.target !== e.currentTarget) return; document.getElementById('history-overlay').classList.add('hidden'); }
 
-async function loadHistoryData() {
+async function loadHistoryData(range = 'week') {
   const st = document.getElementById('history-status');
+  if (historyLoadingPromise) return historyLoadingPromise;
+
   st.textContent = 'Načítání…';
-  try {
-    // Try static JSON first
-    const resp = await fetch('data/history.json?v=' + Date.now());
-    if (!resp.ok) throw new Error('fetch failed');
-    const json = await resp.json();
-    if (!json.prices || json.prices.length === 0) throw new Error('empty data');
-    historyData = json.prices.map(p => {
-      const out = { date: p.d };
-      for (const [short, long] of Object.entries(KEY_MAP)) out[long] = p[short] || null;
-      return out;
-    });
-    st.textContent = `${historyData.length} bodů · aktualizováno ${json.updated.slice(0, 10)}`;
-    switchHistoryTab(currentRange);
-  } catch (e) {
-    console.warn('Static history failed, falling back to live fetch:', e.message);
-    await loadHistoryLive();
-  }
+  historyLoadingPromise = (async () => {
+    try {
+      // Try static JSON first
+      const resp = await fetch('data/history.json?v=' + Date.now());
+      if (!resp.ok) throw new Error('fetch failed');
+      const json = await resp.json();
+      if (!json.prices || json.prices.length === 0) throw new Error('empty data');
+      historyData = json.prices.map(p => {
+        const out = { date: p.d };
+        for (const [short, long] of Object.entries(KEY_MAP)) out[long] = p[short] || null;
+        return out;
+      });
+      historySource = { kind: 'static', updated: json.updated };
+      historyLoadedRange = 'half';
+      switchHistoryTab(currentRange);
+    } catch (e) {
+      console.warn('Static history failed, falling back to live fetch:', e.message);
+      await loadHistoryLive(range);
+    } finally {
+      historyLoadingPromise = null;
+    }
+  })();
+
+  return historyLoadingPromise;
 }
 
-// Fallback: fetch up to 180 days live via CORS proxy
-async function loadHistoryLive() {
+// Fallback: fetch only requested range first, longer ranges on demand
+async function loadHistoryLive(range = 'week') {
   const st = document.getElementById('history-status');
-  const pts = [], now = new Date();
-  const totalDays = RANGE_DAYS.half;
+  const requestedDays = RANGE_DAYS[range];
+  const alreadyLoadedDays = historyLoadedRange ? RANGE_DAYS[historyLoadedRange] : -1;
 
-  for (let d = totalDays; d >= 0; d--) {
+  if (historySource?.kind === 'live' && historyData?.length && alreadyLoadedDays >= requestedDays) {
+    switchHistoryTab(currentRange);
+    return;
+  }
+
+  const pts = [], now = new Date();
+  for (let d = requestedDays; d >= 0; d--) {
     const dt = new Date(now); dt.setDate(dt.getDate() - d);
     const dd = String(dt.getDate()).padStart(2,'0'), mm = String(dt.getMonth()+1).padStart(2,'0'), yy = dt.getFullYear();
     try {
-      st.textContent = `Načítání: ${totalDays - d + 1}/${totalDays + 1}…`;
+      st.textContent = `Načítání: ${requestedDays - d + 1}/${requestedDays + 1}…`;
       const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
         method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body: `txtDate=${dd}/${mm}/${yy}&hod=12&min=00`,
@@ -501,22 +519,39 @@ async function loadHistoryLive() {
 
   if (pts.length) {
     historyData = pts;
-    st.textContent = `${pts.length} bodů (live)`;
+    historySource = { kind: 'live' };
+    historyLoadedRange = range;
     switchHistoryTab(currentRange);
   } else {
     st.textContent = 'Historie nedostupná';
   }
 }
 
-function switchHistoryTab(range) {
+async function switchHistoryTab(range) {
   currentRange = range;
   document.querySelectorAll('.htab').forEach(el => el.classList.toggle('active', el.dataset.range === range));
-  if (!historyData) return;
+
+  if (!historyData) {
+    await loadHistoryData(range);
+    return;
+  }
+
+  if (historySource?.kind === 'live') {
+    const loadedDays = historyLoadedRange ? RANGE_DAYS[historyLoadedRange] : -1;
+    const requestedDays = RANGE_DAYS[range];
+    if (requestedDays > loadedDays) {
+      await loadHistoryLive(range);
+      return;
+    }
+  }
+
   const cutoff = getHistoryCutoffDate(range);
   const filtered = cutoff ? historyData.filter(d => d.date >= cutoff) : historyData;
   renderHistoryChart(filtered);
   renderHistorySummary(filtered);
-  document.getElementById('history-status').textContent = `${filtered.length} bodů`;
+
+  const sourceLabel = historySource?.kind === 'live' ? 'live' : 'cache';
+  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel})`;
 }
 
 function fmtDate(iso) { const p = iso.split('-'); return `${p[2]}.${p[1]}.${p[0]}`; }
