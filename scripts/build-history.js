@@ -94,6 +94,15 @@ async function runBatch(dates) {
   return Promise.all(dates.map(d => fetchDay(d).catch(() => null)));
 }
 
+function readJsonIfExists(file) {
+  if (!fs.existsSync(file)) return null;
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function isValidHistorySnapshot(data) {
+  return !!(data && Array.isArray(data.prices) && data.prices.length > 0);
+}
+
 async function main() {
   const now = new Date();
   const allDates = [];
@@ -121,27 +130,62 @@ async function main() {
   const deduped = [];
   const seen = new Set();
   for (const r of results) {
-    const key = r.vf; // unique by validity start
-    if (key && seen.has(key)) continue;
-    if (key) seen.add(key);
+    const key = r.vf || `${r.d}:${r.n95}:${r.die}:${r.lpg}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     deduped.push(r);
   }
 
   console.log(`Deduplicated to ${deduped.length} unique price periods.`);
 
-  // Write output
   const outDir = path.join(__dirname, '..', 'data');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
   const outFile = path.join(outDir, 'history.json');
-  const output = {
-    updated: new Date().toISOString(),
-    days: DAYS,
-    count: deduped.length,
-    prices: deduped,
-  };
-  fs.writeFileSync(outFile, JSON.stringify(output));
-  console.log(`Written to ${outFile} (${(fs.statSync(outFile).size / 1024).toFixed(1)} KB)`);
+  const fallbackFile = path.join(outDir, 'history-last-valid.json');
+  const previous = readJsonIfExists(outFile);
+  const lastValid = readJsonIfExists(fallbackFile);
+
+  let output;
+  if (deduped.length > 0) {
+    output = {
+      updated: new Date().toISOString(),
+      days: DAYS,
+      count: deduped.length,
+      prices: deduped,
+    };
+    fs.writeFileSync(outFile, JSON.stringify(output));
+    fs.writeFileSync(fallbackFile, JSON.stringify(output));
+    console.log(`Written fresh history to ${outFile} (${(fs.statSync(outFile).size / 1024).toFixed(1)} KB)`);
+    console.log(`Updated fallback snapshot ${fallbackFile}`);
+    return;
+  }
+
+  if (isValidHistorySnapshot(previous)) {
+    output = {
+      ...previous,
+      updated: previous.updated || new Date().toISOString(),
+      fallbackUsed: 'history.json',
+      fallbackReason: 'build returned no valid price points',
+    };
+    fs.writeFileSync(outFile, JSON.stringify(output));
+    console.log('No valid fresh data, kept existing history.json as fallback.');
+    return;
+  }
+
+  if (isValidHistorySnapshot(lastValid)) {
+    output = {
+      ...lastValid,
+      updated: lastValid.updated || new Date().toISOString(),
+      fallbackUsed: 'history-last-valid.json',
+      fallbackReason: 'build returned no valid price points',
+    };
+    fs.writeFileSync(outFile, JSON.stringify(output));
+    console.log('No valid fresh data, restored last valid snapshot to history.json.');
+    return;
+  }
+
+  throw new Error('No valid fresh history and no valid fallback snapshot available.');
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
