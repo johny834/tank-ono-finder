@@ -87,11 +87,7 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('tank-ono-theme', next);
   setTileLayer(next);
-  if (historyChart && historyData) {
-    const days = RANGE_DAYS[currentRange];
-    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
-    renderHistoryChart(historyData.filter(d => d.date >= cutoff.toISOString().slice(0,10)));
-  }
+  if (historyChart && historyData) switchHistoryTab(currentRange);
 }
 function setTileLayer(theme) {
   if (tileLayer) map.removeLayer(tileLayer);
@@ -427,6 +423,14 @@ function parsePrices(html) {
 // ── History ────────────────────────────────────────────────
 let historyChart = null, historyData = null, currentRange = 'week';
 const RANGE_DAYS = { week: 7, month: 30, half: 180 };
+
+function getHistoryCutoffDate(range) {
+  if (!historyData || !historyData.length) return null;
+  const latest = historyData[historyData.length - 1].date;
+  const cutoff = new Date(`${latest}T12:00:00`);
+  cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
+  return cutoff.toISOString().slice(0, 10);
+}
 const FUEL_META = {
   natural95:        { label: 'Natural 95',  color: '#e5760a',  primary: true },
   diesel:           { label: 'Diesel',      color: '#2563eb',  primary: true },
@@ -467,15 +471,17 @@ async function loadHistoryData() {
   }
 }
 
-// Fallback: fetch last 7 days live via CORS proxy
+// Fallback: fetch up to 180 days live via CORS proxy
 async function loadHistoryLive() {
   const st = document.getElementById('history-status');
   const pts = [], now = new Date();
-  for (let d = 7; d >= 0; d--) {
+  const totalDays = RANGE_DAYS.half;
+
+  for (let d = totalDays; d >= 0; d--) {
     const dt = new Date(now); dt.setDate(dt.getDate() - d);
     const dd = String(dt.getDate()).padStart(2,'0'), mm = String(dt.getMonth()+1).padStart(2,'0'), yy = dt.getFullYear();
     try {
-      st.textContent = `Načítání: ${8-d}/8…`;
+      st.textContent = `Načítání: ${totalDays - d + 1}/${totalDays + 1}…`;
       const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
         method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body: `txtDate=${dd}/${mm}/${yy}&hod=12&min=00`,
@@ -492,10 +498,11 @@ async function loadHistoryLive() {
     } catch {}
     await new Promise(r => setTimeout(r, 300));
   }
+
   if (pts.length) {
     historyData = pts;
     st.textContent = `${pts.length} bodů (live)`;
-    switchHistoryTab('week');
+    switchHistoryTab(currentRange);
   } else {
     st.textContent = 'Historie nedostupná';
   }
@@ -505,8 +512,8 @@ function switchHistoryTab(range) {
   currentRange = range;
   document.querySelectorAll('.htab').forEach(el => el.classList.toggle('active', el.dataset.range === range));
   if (!historyData) return;
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
-  const filtered = historyData.filter(d => d.date >= cutoff.toISOString().slice(0,10));
+  const cutoff = getHistoryCutoffDate(range);
+  const filtered = cutoff ? historyData.filter(d => d.date >= cutoff) : historyData;
   renderHistoryChart(filtered);
   renderHistorySummary(filtered);
   document.getElementById('history-status').textContent = `${filtered.length} bodů`;
