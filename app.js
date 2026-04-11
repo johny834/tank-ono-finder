@@ -447,8 +447,11 @@ const KEY_MAP = { n95:'natural95', n95p:'natural95premium', n98:'natural98', die
 
 function openHistory() {
   document.getElementById('history-overlay').classList.remove('hidden');
+  if (!historyData && !historyLoadingPromise) {
+    loadHistoryData('week');
+    return;
+  }
   switchHistoryTab(currentRange);
-  if (!historyData && !historyLoadingPromise) loadHistoryData('week');
 }
 function closeHistory(e) { if (e && e.target !== e.currentTarget) return; document.getElementById('history-overlay').classList.add('hidden'); }
 
@@ -471,7 +474,7 @@ async function loadHistoryData(range = 'week') {
       });
       historySource = { kind: 'static', updated: json.updated };
       historyLoadedRange = 'half';
-      switchHistoryTab(currentRange);
+      renderCurrentHistoryRange();
     } catch (e) {
       console.warn('Static history failed, falling back to live fetch:', e.message);
       await loadHistoryLive(range);
@@ -490,7 +493,7 @@ async function loadHistoryLive(range = 'week') {
   const alreadyLoadedDays = historyLoadedRange ? RANGE_DAYS[historyLoadedRange] : -1;
 
   if (historySource?.kind === 'live' && historyData?.length && alreadyLoadedDays >= requestedDays) {
-    switchHistoryTab(currentRange);
+    renderCurrentHistoryRange();
     return;
   }
 
@@ -521,10 +524,21 @@ async function loadHistoryLive(range = 'week') {
     historyData = pts;
     historySource = { kind: 'live' };
     historyLoadedRange = range;
-    switchHistoryTab(currentRange);
+    renderCurrentHistoryRange();
   } else {
     st.textContent = 'Historie nedostupná';
   }
+}
+
+function renderCurrentHistoryRange() {
+  if (!historyData) return;
+  const cutoff = getHistoryCutoffDate(currentRange);
+  const filtered = cutoff ? historyData.filter(d => d.date >= cutoff) : historyData;
+  renderHistoryChart(filtered);
+  renderHistorySummary(filtered);
+
+  const sourceLabel = historySource?.kind === 'live' ? 'live' : 'cache';
+  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel})`;
 }
 
 async function switchHistoryTab(range) {
@@ -545,13 +559,7 @@ async function switchHistoryTab(range) {
     }
   }
 
-  const cutoff = getHistoryCutoffDate(range);
-  const filtered = cutoff ? historyData.filter(d => d.date >= cutoff) : historyData;
-  renderHistoryChart(filtered);
-  renderHistorySummary(filtered);
-
-  const sourceLabel = historySource?.kind === 'live' ? 'live' : 'cache';
-  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel})`;
+  renderCurrentHistoryRange();
 }
 
 function fmtDate(iso) { const p = iso.split('-'); return `${p[2]}.${p[1]}.${p[0]}`; }
