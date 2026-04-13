@@ -428,9 +428,8 @@ let historyLoadedRange = null;
 const RANGE_DAYS = { week: 7, month: 30, half: 180 };
 
 function getHistoryCutoffDate(range) {
-  if (!historyData || !historyData.length) return null;
-  const latest = historyData[historyData.length - 1].date;
-  const cutoff = new Date(`${latest}T12:00:00`);
+  const cutoff = new Date();
+  cutoff.setHours(12, 0, 0, 0);
   cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
   return cutoff.toISOString().slice(0, 10);
 }
@@ -538,7 +537,9 @@ function renderCurrentHistoryRange() {
   renderHistorySummary(filtered);
 
   const sourceLabel = historySource?.kind === 'live' ? 'live' : 'cache';
-  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel})`;
+  const latestDataDate = historyData.length ? historyData[historyData.length - 1].date : null;
+  const freshness = latestDataDate ? `, data do ${fmtDate(latestDataDate)}` : '';
+  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel}${freshness})`;
 }
 
 async function switchHistoryTab(range) {
