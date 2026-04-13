@@ -2,7 +2,7 @@ name: Update Price History
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Daily at 6:00 UTC (8:00 CET)
+    - cron: '0 18 * * *'  # Daily at 18:00 UTC (20:00 Prague, 19:00 CET / 20:00 CEST)
   workflow_dispatch: {}   # Manual trigger
   push:
     branches: [main]
