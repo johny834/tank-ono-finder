@@ -82,10 +82,15 @@ const TILES = {
   dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
 };
 function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
+function syncThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', getTheme() === 'dark' ? '#0f1117' : '#ffffff');
+}
 function toggleTheme() {
   const next = getTheme() === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('tank-ono-theme', next);
+  syncThemeColor();
   setTileLayer(next);
   if (historyChart && historyData) switchHistoryTab(currentRange);
 }
@@ -683,6 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const saved = localStorage.getItem('tank-ono-theme');
   if (saved) document.documentElement.setAttribute('data-theme', saved);
   else if (window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+  syncThemeColor();
 
   wasMobile = isMobile();
   window.addEventListener('resize', handleResize);
