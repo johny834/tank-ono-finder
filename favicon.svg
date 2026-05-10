@@ -1,0 +1,32 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="256" y1="24" x2="256" y2="488" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(274 224) rotate(90) scale(176 160)">
+      <stop stop-color="#FBBF24" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#F97316" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pin" x1="256" y1="88" x2="256" y2="418" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+    <filter id="blur" x="82" y="64" width="384" height="384" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="464" height="464" rx="116" fill="url(#bg)"/>
+  <circle cx="274" cy="224" r="132" fill="url(#glow)" filter="url(#blur)"/>
+  <path d="M256 418C256 418 153 264.078 153 192C153 135.115 199.115 89 256 89C312.885 89 359 135.115 359 192C359 264.078 256 418 256 418Z" fill="url(#pin)"/>
+  <ellipse cx="256" cy="192" rx="74" ry="74" fill="#F8FAFC"/>
+  <path d="M226 159C226 152.373 231.373 147 238 147H274C280.627 147 286 152.373 286 159V236C286 242.627 280.627 248 274 248H238C231.373 248 226 242.627 226 236V159Z" fill="#111827"/>
+  <rect x="236" y="169" width="40" height="24" rx="6" fill="#F8FAFC"/>
+  <rect x="236" y="205" width="16" height="18" fill="#F8FAFC"/>
+  <path d="M286 169H304" stroke="#111827" stroke-width="10" stroke-linecap="round"/>
+  <path d="M304 169V187" stroke="#111827" stroke-width="10" stroke-linecap="round"/>
+  <path d="M286 193C300.667 199.667 308 212.333 308 231" stroke="#111827" stroke-width="10" stroke-linecap="round"/>
+  <path d="M91 348C141 297 220 281 319 314" stroke="white" stroke-opacity="0.12" stroke-width="12" stroke-linecap="round"/>
+  <rect x="24" y="24" width="464" height="464" rx="116" stroke="white" stroke-opacity="0.16" stroke-width="3"/>
+</svg>
