@@ -84,7 +84,7 @@ const TILES = {
 function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
 function syncThemeColor() {
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', getTheme() === 'dark' ? '#0f1117' : '#ffffff');
+  if (meta) meta.setAttribute('content', getTheme() === 'dark' ? '#f59e0b' : '#e5760a');
 }
 function toggleTheme() {
   const next = getTheme() === 'dark' ? 'light' : 'dark';
