@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Fetches Tank ONO daily price snapshots for the last 180 days
- * and writes data/history.json.
+ * and writes data/history.json plus data/current.json.
  *
  * Run: node scripts/build-history.js
  */
@@ -35,11 +35,49 @@ async function fetchDay(date) {
   return parseHTML(html, `${yyyy}-${mm}-${dd}`);
 }
 
+async function fetchCurrent() {
+  const now = new Date();
+  const minutes = Math.floor(now.getMinutes() / 10) * 10;
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const yyyy = now.getFullYear();
+  const body = `txtDate=${dd}/${mm}/${yyyy}&hod=${now.getHours()}&min=${String(minutes).padStart(2, '0')}`;
+
+  const resp = await fetch(API, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (compatible; TankONOFinder/1.0)',
+      'Accept': 'text/html',
+    },
+    body,
+  });
+  if (!resp.ok) return null;
+  const html = await resp.text();
+  const parsed = parseHTML(html, `${yyyy}-${mm}-${dd}`);
+  if (!parsed) return null;
+
+  return {
+    updated: new Date().toISOString(),
+    requestedAt: `${yyyy}-${mm}-${dd}T${String(now.getHours()).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`,
+    validity: [parsed.vf, parsed.vt].filter(Boolean).join(' – '),
+    prices: {
+      natural95: parsed.n95,
+      natural95premium: parsed.n95p,
+      natural98: parsed.n98,
+      diesel: parsed.die,
+      dieselplus: parsed.diep,
+      adblue: parsed.adb,
+      lpg: parsed.lpg,
+    },
+  };
+}
+
 function parseHTML(html, isoDate) {
   // Validity
-  const vm = html.match(/platnost\s+od:\s*([\d/: ]+)\s+do:\s*([\d/: ]+)/i);
+  const vm = html.match(/platnost\s+od:\s*([\d/: ]+?)(?:\s+do:\s*([\d/: ]+))?(?:<\/div>|$)/i);
   const validFrom = vm ? vm[1].trim() : '';
-  const validTo = vm ? vm[2].trim() : '';
+  const validTo = vm?.[2] ? vm[2].trim() : '';
 
   // Find price table
   const tableMatch = html.match(/<table[^>]*class="cenik"[^>]*>([\s\S]*?)<\/table>/i);
@@ -134,8 +172,31 @@ async function main() {
 
   const outFile = path.join(outDir, 'history.json');
   const fallbackFile = path.join(outDir, 'history-last-valid.json');
+  const currentFile = path.join(outDir, 'current.json');
   const previous = readJsonIfExists(outFile);
   const lastValid = readJsonIfExists(fallbackFile);
+  const previousCurrent = readJsonIfExists(currentFile);
+
+  try {
+    const current = await fetchCurrent();
+    if (current?.prices?.natural95 || current?.prices?.diesel || current?.prices?.lpg) {
+      fs.writeFileSync(currentFile, JSON.stringify(current));
+      console.log(`Written current price snapshot to ${currentFile}`);
+    } else {
+      throw new Error('current snapshot missing price data');
+    }
+  } catch (e) {
+    if (previousCurrent?.prices) {
+      fs.writeFileSync(currentFile, JSON.stringify({
+        ...previousCurrent,
+        fallbackUsed: true,
+        fallbackReason: e.message,
+      }));
+      console.log('Current snapshot fetch failed, kept previous current.json as fallback.');
+    } else {
+      console.warn(`Current snapshot fetch failed and no previous current.json exists: ${e.message}`);
+    }
+  }
 
   let output;
   if (snapshots.length > 0) {

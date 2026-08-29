@@ -64,6 +64,7 @@ let nearestId = null;
 let userLocation = null;
 let prices = null;
 let pricesFetched = false;
+let priceSource = null;
 
 // ── Helpers ────────────────────────────────────────────────
 function isMobile() { return window.innerWidth <= 700; }
@@ -75,6 +76,12 @@ function distKm(a, b, c, d) {
   return R * 2 * Math.asin(Math.sqrt(x));
 }
 function fmtDist(km) { return km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1).replace('.',',')} km`; }
+
+function roundDownToTenMinutes(date) {
+  const copy = new Date(date);
+  copy.setMinutes(Math.floor(copy.getMinutes() / 10) * 10, 0, 0);
+  return copy;
+}
 
 // ── Theme ──────────────────────────────────────────────────
 const TILES = {
@@ -168,6 +175,7 @@ function buildPricesHTML() {
   });
   h += '</div>';
   if (prices.validity) h += `<div class="prices-validity">Platnost: ${prices.validity}</div>`;
+  if (priceSource === 'cached') h += '<div class="prices-validity">Zobrazen poslední uložený snapshot.</div>';
   return h;
 }
 
@@ -364,15 +372,97 @@ function requestGeo() {
 }
 
 // ── Prices ─────────────────────────────────────────────────
-async function fetchPrices() {
+function setPriceStatus(kind) {
   const statusEl = document.getElementById('price-status');
   const dot = document.getElementById('price-dot');
+
+  if (kind === 'ok') {
+    statusEl.textContent = 'Aktuální';
+    dot.className = 'ok';
+    return;
+  }
+
+  if (kind === 'cached') {
+    statusEl.textContent = 'Cache';
+    dot.className = 'ok';
+    return;
+  }
+
+  statusEl.textContent = 'Nedostupné';
+  dot.className = 'error';
+}
+
+async function fetchJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+function normalizePriceSnapshot(data) {
+  if (!data || !data.prices) return null;
+  const normalized = {
+    natural95: data.prices.natural95 ?? null,
+    natural95premium: data.prices.natural95premium ?? null,
+    natural98: data.prices.natural98 ?? null,
+    diesel: data.prices.diesel ?? null,
+    dieselplus: data.prices.dieselplus ?? null,
+    adblue: data.prices.adblue ?? null,
+    lpg: data.prices.lpg ?? null,
+    validity: data.validity || '',
+  };
+
+  if (!normalized.natural95 && !normalized.diesel && !normalized.lpg) return null;
+  return normalized;
+}
+
+async function loadCachedPrices() {
+  const current = await fetchJson('data/current.json?v=' + Date.now()).catch(() => null);
+  const currentPrices = normalizePriceSnapshot(current);
+  if (currentPrices) {
+    return {
+      prices: currentPrices,
+      source: current?.fallbackUsed ? 'cached' : 'static',
+    };
+  }
+
+  const history = await fetchJson('data/history.json?v=' + Date.now()).catch(() => null);
+  const last = history?.prices?.[history.prices.length - 1];
+  if (!last) return null;
+
+  return {
+    prices: {
+      natural95: last.n95 ?? null,
+      natural95premium: last.n95p ?? null,
+      natural98: last.n98 ?? null,
+      diesel: last.die ?? null,
+      dieselplus: last.diep ?? null,
+      adblue: last.adb ?? null,
+      lpg: last.lpg ?? null,
+      validity: [last.vf, last.vt].filter(Boolean).join(' – '),
+    },
+    source: 'cached',
+  };
+}
+
+async function fetchPrices() {
+  const statusEl = document.getElementById('price-status');
   const btn = document.getElementById('refresh-btn');
-  statusEl.textContent = 'Načítání…'; dot.className = 'loading'; btn.classList.add('spinning');
-  pricesFetched = false;
+  statusEl.textContent = 'Načítání…';
+  document.getElementById('price-dot').className = 'loading';
+  btn.classList.add('spinning');
+  pricesFetched = !!prices;
 
   try {
-    const now = new Date();
+    const cached = await loadCachedPrices();
+    if (cached) {
+      prices = cached.prices;
+      priceSource = cached.source === 'static' ? 'static' : 'cached';
+      pricesFetched = true;
+      setPriceStatus(priceSource === 'static' ? 'ok' : 'cached');
+      refreshDetail();
+    }
+
+    const now = roundDownToTenMinutes(new Date());
     const body = new URLSearchParams({
       txtDate: `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`,
       hod: String(now.getHours()), min: String(now.getMinutes()).padStart(2,'0'),
@@ -381,13 +471,31 @@ async function fetchPrices() {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString(),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    prices = parsePrices(await resp.text());
-    if (prices) { statusEl.textContent = 'Aktuální'; dot.className = 'ok'; }
-    else { prices = { error: true }; statusEl.textContent = 'Nedostupné'; dot.className = 'error'; }
+    const livePrices = parsePrices(await resp.text());
+    if (livePrices) {
+      prices = livePrices;
+      priceSource = 'live';
+      pricesFetched = true;
+      setPriceStatus('ok');
+    } else if (!prices) {
+      prices = { error: true };
+      priceSource = null;
+      pricesFetched = true;
+      setPriceStatus('error');
+    }
   } catch (e) {
-    console.error(e); prices = { error: true }; statusEl.textContent = 'Nedostupné'; dot.className = 'error';
+    console.error(e);
+    if (!prices) {
+      prices = { error: true };
+      priceSource = null;
+      pricesFetched = true;
+      setPriceStatus('error');
+    } else {
+      setPriceStatus(priceSource === 'cached' ? 'cached' : 'ok');
+    }
   } finally {
-    pricesFetched = true; btn.classList.remove('spinning');
+    pricesFetched = true;
+    btn.classList.remove('spinning');
     refreshDetail();
   }
 }
@@ -398,8 +506,8 @@ function parsePrices(html) {
   let validity = '';
   const nadpis = doc.querySelector('#nadpis');
   if (nadpis) {
-    const m = nadpis.textContent.match(/platnost\s+od:\s*([\d/: ]+)\s+do:\s*([\d/: ]+)/i);
-    if (m) validity = `${m[1].trim()} – ${m[2].trim()}`;
+    const m = nadpis.textContent.match(/platnost\s+od:\s*([\d/: ]+?)(?:\s+do:\s*([\d/: ]+))?$/i);
+    if (m) validity = [m[1], m[2]].filter(Boolean).map(v => v.trim()).join(' – ');
   }
   const table = doc.querySelector('table.cenik');
   if (!table) return null;
