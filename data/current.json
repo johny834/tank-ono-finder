@@ -1,1 +1,1 @@
-{"updated":"2026-10-01T22:19:39.441Z","requestedAt":"2026-10-01T22:10:00","validity":"01/10/2026 15:40:36","prices":{"natural95":"43,50","natural95premium":"43,90","natural98":"46,50","diesel":"46,90","dieselplus":"47,50","adblue":"12,90","lpg":"20,50"}}
+{"updated":"2026-10-01T22:19:39.441Z","requestedAt":"2026-10-01T22:10:00","validity":"01/10/2026 15:40:36","prices":{"natural95":"43,50","natural95premium":"43,90","natural98":"46,50","diesel":"46,90","dieselplus":"47,50","adblue":"12,90","lpg":"20,50"},"fallbackUsed":true,"fallbackReason":"fetch failed"}
