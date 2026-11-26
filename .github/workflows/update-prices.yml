@@ -2,7 +2,8 @@ name: Update Price History
 
 on:
   schedule:
-    - cron: '0 18 * * *'  # Daily at 18:00 UTC (20:00 Prague, 19:00 CET / 20:00 CEST)
+    - cron: '20 15 * * *' # Daily at 15:20 UTC – shortly after Tank ONO's usual afternoon price change
+    - cron: '0 18 * * *'  # Daily at 18:00 UTC – safety re-run
   workflow_dispatch: {}   # Manual trigger
   push:
     branches: [main]

@@ -1,11 +1,12 @@
 'use strict';
 
 /* ═══════════════════════════════════════════════════════════
-   Tank ONO Finder — App Logic v2
-   Desktop: side panel detail | Mobile: bottom sheet
+   Tank ONO Finder — v3
+   Map: MapLibre GL + OpenFreeMap (free, no API key)
+   Data: data/current.json + data/history.json (GitHub Action)
    ═══════════════════════════════════════════════════════════ */
 
-// ── Station data ───────────────────────────────────────────
+// ── Stations ───────────────────────────────────────────────
 const STATIONS = [
   {id:1,name:"ČS Plzeň, Domažlická",lat:49.7364283,lng:13.330928},
   {id:2,name:"ČS Nýřany",lat:49.7143517,lng:13.1829904},
@@ -53,756 +54,786 @@ const STATIONS = [
   {id:44,name:"ČS Ostrov nad Ohří",lat:50.3199113,lng:12.9461271},
   {id:45,name:"ČS Chlumčany u Přeštic",lat:49.6289004,lng:13.3299895},
   {id:46,name:"ČS Rumburk",lat:50.9493663,lng:14.5787406},
+].map(s => ({ ...s, label: s.name.replace(/^ČS\s+/, ''), key: norm(s.name) }));
+
+// ── Fuels ──────────────────────────────────────────────────
+// k = key in current.json, s = short key in history.json, c = CSS color var
+const FUELS = [
+  { k: 'natural95',        s: 'n95',  label: 'Natural 95',  c: '--f-n95',  primary: true },
+  { k: 'diesel',           s: 'die',  label: 'Diesel',      c: '--f-die',  primary: true },
+  { k: 'lpg',              s: 'lpg',  label: 'LPG',         c: '--f-lpg',  primary: true },
+  { k: 'natural95premium', s: 'n95p', label: 'Natural 95+', c: '--f-n95p' },
+  { k: 'natural98',        s: 'n98',  label: 'Natural 98',  c: '--f-n98'  },
+  { k: 'dieselplus',       s: 'diep', label: 'Diesel+',     c: '--f-diep' },
+  { k: 'adblue',           s: 'adb',  label: 'AdBlue',      c: '--f-adb'  },
 ];
+const FUEL = Object.fromEntries(FUELS.map(f => [f.k, f]));
+const RANGE_LABEL = { 7: 'za 7 dní', 30: 'za měsíc', 90: 'za 3 měsíce', 180: 'za půl roku' };
+
+// ── Map styles (OpenFreeMap: free, open, no key) ───────────
+const MAP_STYLES = {
+  light: 'https://tiles.openfreemap.org/styles/positron',
+  dark:  'https://tiles.openfreemap.org/styles/dark',
+};
+// Raster OSM fallback if OpenFreeMap is unreachable
+const FALLBACK_STYLE = {
+  version: 8,
+  sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 19,
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' } },
+  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+};
 
 // ── State ──────────────────────────────────────────────────
-let map, tileLayer;
-let userMarker = null;
-let stationMarkers = {};
-let selectedId = null;
-let nearestId = null;
-let userLocation = null;
-let prices = null;
-let pricesFetched = false;
-let priceSource = null;
+const state = {
+  map: null, mapReady: false, mapFallback: false,
+  markers: {}, userMarker: null,
+  user: null, nearestId: null, selectedId: null, geoFailed: false,
+  current: null,          // { prices: {k: number}, validFrom: Date|null, updated }
+  series: [],             // [{ date:'YYYY-MM-DD', natural95: 35.9, ... }]
+  loadError: false,
+  fuel: 'natural95', range: 30, compare: false,
+  tab: 'trend', query: '',
+  expanded: false, peek: 260,
+  chart: null,
+};
 
 // ── Helpers ────────────────────────────────────────────────
-function isMobile() { return window.innerWidth <= 700; }
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const $ = id => document.getElementById(id);
+function norm(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function isDesktop() { return window.matchMedia('(min-width: 900px)').matches; }
+function num(v) { if (v == null) return null; const n = parseFloat(String(v).replace(/\s/g, '').replace(',', '.')); return Number.isFinite(n) ? n : null; }
+function fmtPrice(n) { return n == null ? '–' : n.toFixed(2).replace('.', ','); }
+function fmtDelta(d) { return (d > 0 ? '+' : d < 0 ? '−' : '') + Math.abs(d).toFixed(2).replace('.', ','); }
+function fmtPct(p) { return (p > 0 ? '+' : p < 0 ? '−' : '') + Math.abs(p).toFixed(1).replace('.', ',') + ' %'; }
+function fmtDist(km) { return km < 1 ? `${Math.round(km * 1000)} m` : km < 10 ? `${km.toFixed(1).replace('.', ',')} km` : `${Math.round(km)} km`; }
+function isoLocal(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function parseIso(iso) { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d, 12); }
+function fmtDay(iso, opts = { day: 'numeric', month: 'numeric' }) { return parseIso(iso).toLocaleDateString('cs-CZ', opts); }
 function distKm(a, b, c, d) {
   const R = 6371, p = Math.PI / 180;
-  const dLat = (c - a) * p, dLng = (d - b) * p;
-  const x = Math.sin(dLat/2)**2 + Math.cos(a*p) * Math.cos(c*p) * Math.sin(dLng/2)**2;
+  const x = Math.sin((c - a) * p / 2) ** 2 + Math.cos(a * p) * Math.cos(c * p) * Math.sin((d - b) * p / 2) ** 2;
   return R * 2 * Math.asin(Math.sqrt(x));
 }
-function fmtDist(km) { return km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1).replace('.',',')} km`; }
+function stationById(id) { return STATIONS.find(s => s.id === id); }
+function distTo(s) { return state.user ? distKm(state.user.lat, state.user.lng, s.lat, s.lng) : null; }
+function trendCls(d) { return d > 0.001 ? 'up' : d < -0.001 ? 'down' : 'flat'; }
+function arrow(d) { return d > 0.001 ? '▲' : d < -0.001 ? '▼' : '•'; }
 
-function roundDownToTenMinutes(date) {
-  const copy = new Date(date);
-  copy.setMinutes(Math.floor(copy.getMinutes() / 10) * 10, 0, 0);
-  return copy;
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-// ── Theme ──────────────────────────────────────────────────
-const TILES = {
-  light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-  dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+// "25/11/2026 15:44:41" → Date
+function parseValidity(str) {
+  const m = str && str.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+  return m ? new Date(+m[3], m[2] - 1, +m[1], +m[4], +m[5]) : null;
+}
+
+// ── Icons ──────────────────────────────────────────────────
+const ICON = {
+  pump: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 22V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v17"/><path d="M2 22h14"/><path d="M15 9h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V8.5L19 5"/><path d="M6 8h6"/></svg>',
+  nav: '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21.7 2.3a1 1 0 0 0-1.06-.23l-18 7a1 1 0 0 0 .08 1.9l7.6 2.2 2.2 7.6a1 1 0 0 0 .93.73h.03a1 1 0 0 0 .94-.64l7-18a1 1 0 0 0-.22-1.06z"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s-8-6.2-8-12a8 8 0 0 1 16 0c0 5.8-8 12-8 12z"/><circle cx="12" cy="10" r="3"/></svg>',
+  chev: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
 };
-function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
+
+/* ═══════════════════════════════════════════════════════════
+   THEME
+   ═══════════════════════════════════════════════════════════ */
+const darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+function theme() { return document.documentElement.dataset.theme || (darkMQ.matches ? 'dark' : 'light'); }
 function syncThemeColor() {
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', getTheme() === 'dark' ? '#f59e0b' : '#e5760a');
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.setAttribute('content', theme() === 'dark' ? '#0b0e14' : '#f6f7f9'));
 }
 function toggleTheme() {
-  const next = getTheme() === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('tank-ono-theme', next);
+  const next = theme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('tank-ono-theme', next); } catch (e) {}
+  onThemeChange();
+}
+function onThemeChange() {
   syncThemeColor();
-  setTileLayer(next);
-  if (historyChart && historyData) switchHistoryTab(currentRange);
-}
-function setTileLayer(theme) {
-  if (tileLayer) map.removeLayer(tileLayer);
-  tileLayer = L.tileLayer(TILES[theme], {
-    attribution: '© <a href="https://openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com">CARTO</a>',
-    subdomains: 'abcd', maxZoom: 19,
-  }).addTo(map);
+  if (state.map && !state.mapFallback) state.map.setStyle(MAP_STYLES[theme()]);
+  renderChart(); renderFuelList();
 }
 
-// ── Markers ────────────────────────────────────────────────
-const PIN = { normal: '#e5760a', nearest: '#16a34a', selected: '#f59e0b' };
-function pinColor(id) { return id === selectedId ? PIN.selected : id === nearestId ? PIN.nearest : PIN.normal; }
-function buildPin(id) {
-  const c = pinColor(id), big = id === selectedId || id === nearestId;
-  const sz = big ? 36 : 30, h = Math.round(sz * 1.4);
-  const cx = sz/2, cy = sz/2, r = Math.round(sz * .2);
-  return L.divIcon({
-    html: `<svg width="${sz}" height="${h}" viewBox="0 0 ${sz} ${h}" xmlns="http://www.w3.org/2000/svg">
-      <path d="M${cx} 0C${cx*.4} 0 0 ${cy*.4} 0 ${cy} 0 ${cy*1.7} ${cx} ${h} ${cx} ${h}S${sz} ${cy*1.7} ${sz} ${cy} ${cx*1.6} 0 ${cx} 0Z" fill="${c}" stroke="white" stroke-width="1.5"/>
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="white"/></svg>`,
-    className: 'custom-pin', iconSize: [sz,h], iconAnchor: [sz/2,h],
-  });
-}
-function refreshMarker(id) {
-  const m = stationMarkers[id]; if (!m) return;
-  m.setIcon(buildPin(id));
-  m.setZIndexOffset(id === selectedId ? 2000 : id === nearestId ? 1000 : 0);
-}
-
-// ── Map ────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════
+   MAP
+   ═══════════════════════════════════════════════════════════ */
 function initMap() {
-  map = L.map('map', { center: [49.85, 15.55], zoom: 7, zoomControl: false, attributionControl: true });
-  L.control.zoom({ position: 'bottomright' }).addTo(map);
-  setTileLayer(getTheme());
+  if (!window.maplibregl) { $('map').innerHTML = '<div class="empty" style="padding-top:40vh">Mapu se nepodařilo načíst.</div>'; return; }
+
+  const bounds = stationBounds();
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: MAP_STYLES[theme()],
+    bounds, fitBoundsOptions: { padding: mapPadding(40) },
+    attributionControl: { compact: true },
+    dragRotate: false, pitchWithRotate: false, touchPitch: false,
+    maxZoom: 18, minZoom: 5,
+  });
+  map.touchZoomRotate.disableRotation();
+  state.map = map;
+
+  const useFallback = () => {
+    if (state.mapReady || state.mapFallback) return;
+    state.mapFallback = true;
+    console.warn('OpenFreeMap unavailable – falling back to OSM raster tiles');
+    map.setStyle(FALLBACK_STYLE);
+  };
+  const fallbackTimer = setTimeout(useFallback, 9000);
+  map.on('error', e => { if (!state.mapReady) { console.warn(e && e.error); useFallback(); } });
+  map.once('load', () => { state.mapReady = true; clearTimeout(fallbackTimer); });
 
   STATIONS.forEach(s => {
-    const m = L.marker([s.lat, s.lng], { icon: buildPin(s.id), title: s.name, riseOnHover: true }).addTo(map);
-    m.on('click', () => selectStation(s.id, true));
-    stationMarkers[s.id] = m;
+    const el = document.createElement('div');
+    el.className = 'pin';
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', s.label);
+    el.innerHTML = '<svg viewBox="0 0 34 42"><path class="pin-body" d="M17 1C8.7 1 2 7.6 2 15.8 2 26.6 17 41 17 41s15-14.4 15-25.2C32 7.6 25.3 1 17 1z"/><circle class="pin-dot" cx="17" cy="15.5" r="5.5"/></svg>';
+    el.addEventListener('click', e => { e.stopPropagation(); selectStation(s.id); });
+    state.markers[s.id] = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([s.lng, s.lat]).addTo(map);
   });
 
-  // Click empty map → deselect
-  map.on('click', (e) => {
-    // Only if not clicking a marker
-    if (e.originalEvent && e.originalEvent.target.closest('.custom-pin')) return;
-    clearSelection();
-  });
+  map.on('click', () => { if (state.selectedId) clearSelection(); });
 }
 
-// ── Prices HTML (shared between desktop & mobile) ──────────
-function buildPricesHTML() {
-  if (!pricesFetched) return '<div class="prices-loading"><span class="spinner"></span> Načítání cen…</div>';
-  if (!prices || prices.error) return '<div class="prices-error">⚠ Ceny nedostupné</div>';
-
-  const fuels = [
-    { k:'natural95', l:'Natural 95', p:true },
-    { k:'diesel', l:'Diesel', p:true },
-    { k:'lpg', l:'LPG', p:true },
-    { k:'natural95premium', l:'Nat. 95+', p:false },
-    { k:'natural98', l:'Natural 98', p:false },
-    { k:'dieselplus', l:'Diesel+', p:false },
-    { k:'adblue', l:'AdBlue', p:false },
-  ].filter(f => prices[f.k]);
-
-  if (!fuels.length) return '<div class="prices-error">⚠ Ceny nedostupné</div>';
-
-  let h = '<div class="prices-grid">';
-  fuels.forEach(f => {
-    h += `<div class="fuel-card${f.p ? ' primary' : ''}">
-      <div class="fuel-label">${f.l}</div>
-      <div class="fuel-val">${prices[f.k]} <span class="fuel-unit">Kč</span></div>
-    </div>`;
-  });
-  h += '</div>';
-  if (prices.validity) h += `<div class="prices-validity">Platnost: ${prices.validity}</div>`;
-  if (priceSource === 'cached') h += '<div class="prices-validity">Zobrazen poslední uložený snapshot.</div>';
-  return h;
+function stationBounds(list = STATIONS) {
+  const lngs = list.map(s => s.lng), lats = list.map(s => s.lat);
+  return [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]];
 }
 
-function buildChipsHTML(station) {
-  const chips = [];
-  if (userLocation) chips.push(`<span class="chip dist-chip">${fmtDist(distKm(userLocation.lat, userLocation.lng, station.lat, station.lng))}</span>`);
-  if (station.id === nearestId) chips.push(`<span class="chip nearest-chip">⭐ Nejbližší</span>`);
-  return chips.join('');
+// Map area not covered by UI → MapLibre padding
+function mapPadding(extra = 0) {
+  const safeT = parseFloat(css('--safe-t-px')) || 0;
+  if (isDesktop()) return { top: 90 + extra, bottom: 30 + extra, left: 416 + 30 + extra, right: 70 + extra };
+  return { top: 64 + safeT + extra, bottom: state.peek + 10 + extra, left: 20 + extra, right: 20 + extra };
 }
 
-// ── Selection (core) ───────────────────────────────────────
-function selectStation(id, pan) {
-  const prev = selectedId;
-  selectedId = id;
-  if (prev && prev !== id) refreshMarker(prev);
-  refreshMarker(id);
-  if (nearestId && nearestId !== id && nearestId !== prev) refreshMarker(nearestId);
+function updatePinClasses() {
+  for (const [id, m] of Object.entries(state.markers)) {
+    const el = m.getElement(), n = +id;
+    el.classList.toggle('selected', n === state.selectedId);
+    el.classList.toggle('nearest', n === state.nearestId);
+    m.getElement().style.zIndex = n === state.selectedId ? 3 : n === state.nearestId ? 2 : 1;
+  }
+}
 
-  const s = STATIONS.find(x => x.id === id);
-  showDetail(s);
-  highlightListItem(id);
+function fitAll() {
+  clearSelection(true);
+  state.map?.fitBounds(stationBounds(), { padding: mapPadding(30), duration: 700 });
+}
 
-  if (pan) {
-    // On desktop, offset map center to account for side panel
-    if (!isMobile()) {
-      const panelW = 320;
-      const point = map.latLngToContainerPoint([s.lat, s.lng]);
-      const offset = L.point(panelW / 2, 0);
-      const target = map.containerPointToLatLng(point.subtract(offset));
-      map.panTo(target, { animate: true, duration: .4 });
-    } else {
-      map.panTo([s.lat, s.lng], { animate: true, duration: .4 });
+/* ═══════════════════════════════════════════════════════════
+   SELECTION
+   ═══════════════════════════════════════════════════════════ */
+function selectStation(id, { fly = true } = {}) {
+  state.selectedId = id;
+  updatePinClasses();
+  renderStationCard();
+  renderStationList();
+  if (!isDesktop()) setExpanded(false);
+  const s = stationById(id);
+  if (fly && state.map) {
+    state.map.flyTo({ center: [s.lng, s.lat], zoom: Math.max(state.map.getZoom(), 11.5), padding: mapPadding(), duration: 900, essential: true });
+  }
+}
+
+function clearSelection(silent) {
+  if (!state.selectedId) return;
+  state.selectedId = null;
+  updatePinClasses();
+  renderStationCard();
+  if (!silent) renderStationList();
+}
+
+function navigateTo(id) {
+  const s = stationById(id); if (!s) return;
+  window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`, '_blank', 'noopener');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOLOCATION
+   ═══════════════════════════════════════════════════════════ */
+let geoBusy = false;
+function locate({ userAction = false } = {}) {
+  if (!navigator.geolocation) { onGeoErr({ code: 0 }, userAction); return; }
+  if (geoBusy) return;
+  geoBusy = true;
+  $('locate-btn').classList.add('locating');
+  navigator.geolocation.getCurrentPosition(
+    pos => onGeoOk(pos, userAction),
+    err => onGeoErr(err, userAction),
+    { enableHighAccuracy: false, timeout: 12000, maximumAge: 120000 },
+  );
+}
+
+function onGeoOk(pos, userAction) {
+  geoBusy = false;
+  const btn = $('locate-btn'); btn.classList.remove('locating'); btn.classList.add('active');
+  state.user = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  state.geoFailed = false;
+
+  let best = null, bestD = Infinity;
+  for (const s of STATIONS) { const d = distTo(s); if (d < bestD) { bestD = d; best = s; } }
+  state.nearestId = best?.id ?? null;
+
+  if (state.map) {
+    if (!state.userMarker) {
+      const el = document.createElement('div'); el.className = 'me';
+      state.userMarker = new maplibregl.Marker({ element: el }).setLngLat([state.user.lng, state.user.lat]).addTo(state.map);
+    } else state.userMarker.setLngLat([state.user.lng, state.user.lat]);
+  }
+
+  updatePinClasses();
+  renderStationCard();
+  renderStationList();
+
+  // Frame user + nearest station
+  if (state.map && best && (userAction || !state.selectedId)) {
+    const pts = [state.user, best];
+    const b = [[Math.min(...pts.map(p => p.lng)), Math.min(...pts.map(p => p.lat))], [Math.max(...pts.map(p => p.lng)), Math.max(...pts.map(p => p.lat))]];
+    state.map.fitBounds(b, { padding: mapPadding(50), maxZoom: 13, duration: 1100 });
+  }
+}
+
+function onGeoErr(err, userAction) {
+  geoBusy = false;
+  $('locate-btn').classList.remove('locating');
+  state.geoFailed = true;
+  renderStationCard();
+  if (userAction) toast(err && err.code === 1 ? 'Přístup k poloze je zakázaný v prohlížeči' : 'Polohu se nepodařilo zjistit');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DATA
+   ═══════════════════════════════════════════════════════════ */
+async function getJson(url) {
+  const r = await fetch(url, { cache: 'no-cache' });
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return r.json();
+}
+
+async function loadData() {
+  const [cur, hist] = await Promise.all([
+    getJson('data/current.json').catch(e => (console.warn(e), null)),
+    getJson('data/history.json').catch(e => (console.warn(e), null)),
+  ]);
+
+  const series = (hist?.prices || []).map(p => {
+    const row = { date: p.d };
+    for (const f of FUELS) row[f.k] = num(p[f.s]);
+    return row;
+  }).filter(r => r.date).sort((a, b) => a.date.localeCompare(b.date));
+
+  let current = null;
+  if (cur?.prices) {
+    const prices = {};
+    for (const f of FUELS) prices[f.k] = num(cur.prices[f.k]);
+    if (prices.natural95 || prices.diesel || prices.lpg) {
+      current = { prices, validFrom: parseValidity(cur.validity), updated: cur.updated ? new Date(cur.updated) : null };
     }
   }
-}
-
-function clearSelection() {
-  if (!selectedId) return;
-  const prev = selectedId;
-  selectedId = null;
-  refreshMarker(prev);
-  if (nearestId) refreshMarker(nearestId);
-  hideDetail();
-  highlightListItem(null);
-}
-
-// ── Detail display (responsive) ────────────────────────────
-function showDetail(station) {
-  if (isMobile()) {
-    showSheet(station);
-  } else {
-    showPanel(station);
+  if (!current && series.length) {
+    const last = series[series.length - 1], src = hist.prices[hist.prices.length - 1];
+    current = { prices: Object.fromEntries(FUELS.map(f => [f.k, last[f.k]])), validFrom: parseValidity(src.vf), updated: hist.updated ? new Date(hist.updated) : null };
   }
+
+  // Make the series end with the current price "today"
+  if (current) {
+    const today = isoLocal(new Date());
+    const row = { date: today, ...current.prices };
+    const last = series[series.length - 1];
+    if (last && last.date === today) series[series.length - 1] = row;
+    else if (!last || last.date < today) series.push(row);
+  }
+
+  state.current = current;
+  state.series = series;
+  state.loadError = !current;
+  state.dataUpdated = current?.updated || (hist?.updated ? new Date(hist.updated) : null);
 }
 
-function hideDetail() {
-  // Desktop panel
-  document.getElementById('detail').classList.add('hidden');
-  // Mobile sheet
-  const sheet = document.getElementById('sheet');
-  sheet.classList.remove('visible');
-  sheet.classList.add('hidden');
+// Delta vs. the previous different price, and since when the current one holds
+function lastChange(key) {
+  const s = state.series;
+  const cur = state.current?.prices[key];
+  if (cur == null) return null;
+  for (let i = s.length - 1; i >= 0; i--) {
+    const v = s[i][key];
+    if (v != null && Math.abs(v - cur) > 0.001) {
+      let since = s[i + 1]?.date || null;
+      // Snapshots are taken at noon; prefer the exact price-list start if it falls in that gap
+      const vf = state.current.validFrom;
+      if (since && vf) {
+        const vfIso = isoLocal(vf);
+        if (vfIso <= since && vf > parseIso(s[i].date)) since = vfIso;
+      }
+      return { diff: cur - v, since };
+    }
+  }
+  return { diff: 0, since: null };
 }
 
-// Desktop side panel detail
-function showPanel(station) {
-  const el = document.getElementById('detail');
+function rangeRows(days = state.range) {
+  const cut = new Date(); cut.setDate(cut.getDate() - days);
+  const c = isoLocal(cut);
+  return state.series.filter(r => r.date >= c);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RENDER — sheet top
+   ═══════════════════════════════════════════════════════════ */
+function renderStationCard() {
+  const el = $('station-card');
+  const id = state.selectedId || state.nearestId;
+  const s = id && stationById(id);
+
+  if (!s) {
+    const text = state.geoFailed ? 'Vybrat stanici ze seznamu' : 'Najít nejbližší stanici';
+    el.innerHTML = `<button class="st-prompt" id="st-prompt" type="button">${state.geoFailed ? ICON.pump : ICON.pin}<span>${text}</span></button>`;
+    $('st-prompt').onclick = () => {
+      if (state.geoFailed) { switchTab('stations'); setExpanded(true); }
+      else locate({ userAction: true });
+    };
+    return;
+  }
+
+  const isSel = !!state.selectedId, isNear = s.id === state.nearestId;
+  const d = distTo(s);
+  const sub = [
+    isNear ? '<span class="tag">Nejbližší</span>' : (d == null ? 'Vybraná stanice' : ''),
+    d != null ? `<span>${fmtDist(d)} od vás</span>` : '',
+  ].filter(Boolean).join('<span>·</span>');
+
+  el.innerHTML = `<div class="st ${isNear ? 'is-nearest' : ''}">
+      <div class="st-ico">${ICON.pump}</div>
+      <button class="st-main" type="button" id="st-focus" style="text-align:left">
+        <div class="st-name">${esc(s.label)}</div>
+        <div class="st-sub">${sub}</div>
+      </button>
+      <button class="btn-nav" type="button" id="st-nav">${ICON.nav}Trasa</button>
+      ${isSel ? '<button class="btn-x" type="button" id="st-close" aria-label="Zavřít">×</button>' : ''}
+    </div>`;
+  $('st-nav').onclick = () => navigateTo(s.id);
+  $('st-focus').onclick = () => selectStation(s.id);
+  if (isSel) $('st-close').onclick = () => clearSelection();
+}
+
+function renderHero() {
+  const el = $('hero-prices');
+  if (state.loadError) {
+    el.innerHTML = '<div class="price-error">Ceny se nepodařilo načíst. Zkuste to prosím později.</div>';
+    $('validity').textContent = '';
+    return;
+  }
+  el.innerHTML = FUELS.filter(f => f.primary).map(f => {
+    const p = state.current.prices[f.k];
+    const ch = lastChange(f.k);
+    const delta = ch && ch.diff !== 0
+      ? `<span class="delta ${trendCls(ch.diff)}">${arrow(ch.diff)} ${fmtDelta(ch.diff).replace(/^[+−]/, '')}</span>`
+      : '<span class="delta flat">beze změny</span>';
+    return `<button class="hero-card ${f.k === state.fuel && !state.compare ? 'active' : ''}" data-fuel="${f.k}" style="--fc:var(${f.c})" type="button"
+        aria-label="${f.label} ${fmtPrice(p)} Kč, zobrazit graf">
+      <div class="hero-label"><span class="dot"></span>${f.label}</div>
+      <div class="hero-price">${fmtPrice(p)}<small>Kč</small></div>
+      ${delta}
+    </button>`;
+  }).join('');
+
+  const vf = state.current.validFrom;
+  $('validity').textContent = vf ? `platí od ${vf.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric' })} ${vf.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })}` : '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RENDER — trend tab
+   ═══════════════════════════════════════════════════════════ */
+function setChartHeader(hoverIdx = null) {
+  const rows = rangeRows();
+  const f = FUEL[state.fuel];
+
+  if (state.compare) {
+    const prim = FUELS.filter(x => x.primary);
+    const row = hoverIdx != null ? rows[hoverIdx] : rows[rows.length - 1];
+    $('chart-fuel').innerHTML = 'Porovnání hlavních paliv';
+    $('chart-value').innerHTML = `<div class="chart-legend">${prim.map(x =>
+      `<span><span class="dot" style="--fc:var(${x.c})"></span>${x.label} <b class="num">${fmtPrice(row?.[x.k])}</b></span>`).join('')}</div>`;
+    $('chart-value').style.fontSize = '0';
+    $('chart-sub').innerHTML = row ? (hoverIdx != null ? fmtDay(row.date, { weekday: 'short', day: 'numeric', month: 'numeric', year: 'numeric' }) : 'Aktuální ceny v Kč/l') : '&nbsp;';
+    return;
+  }
+
+  $('chart-value').style.fontSize = '';
+  $('chart-fuel').innerHTML = `<span class="dot" style="--fc:var(${f.c})"></span>${f.label}`;
+  const vals = rows.filter(r => r[f.k] != null);
+  if (!vals.length) { $('chart-value').textContent = '–'; $('chart-sub').innerHTML = 'Bez dat'; return; }
+
+  if (hoverIdx != null && rows[hoverIdx]?.[f.k] != null) {
+    const r = rows[hoverIdx];
+    $('chart-value').innerHTML = `${fmtPrice(r[f.k])}<small>Kč/l</small>`;
+    $('chart-sub').innerHTML = `<span>${fmtDay(r.date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>`;
+    return;
+  }
+  const first = vals[0][f.k], last = vals[vals.length - 1][f.k];
+  const d = last - first, pct = first ? d / first * 100 : 0;
+  $('chart-value').innerHTML = `${fmtPrice(last)}<small>Kč/l</small>`;
+  $('chart-sub').innerHTML = `<span class="${trendCls(d)}">${arrow(d)} ${fmtDelta(d)} Kč (${fmtPct(pct)})</span> <span class="muted">${RANGE_LABEL[state.range]}</span>`;
+}
+
+// Vertical crosshair while scrubbing
+const crosshair = {
+  id: 'crosshair',
+  afterDatasetsDraw(chart) {
+    const a = chart.tooltip?.getActiveElements?.() || [];
+    if (!a.length) return;
+    const x = a[0].element.x, { top, bottom } = chart.chartArea, ctx = chart.ctx;
+    ctx.save();
+    ctx.strokeStyle = css('--line-2'); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+    ctx.restore();
+  },
+};
+
+function renderChart() {
+  if (!window.Chart || !state.series.length) return;
+  const rows = rangeRows();
+  const canvas = $('chart');
+  const keys = state.compare ? FUELS.filter(f => f.primary).map(f => f.k) : [state.fuel];
+  const text3 = css('--text-3'), line = css('--line'), surface = css('--surface-2');
+
+  const datasets = keys.map(k => {
+    const color = css(FUEL[k].c);
+    const single = !state.compare;
+    return {
+      label: FUEL[k].label,
+      data: rows.map(r => r[k]),
+      borderColor: color,
+      borderWidth: 2.25,
+      stepped: 'after',
+      spanGaps: true,
+      pointRadius: 0,
+      pointHoverRadius: 5,
+      pointHoverBorderWidth: 2,
+      pointHoverBackgroundColor: color,
+      pointHoverBorderColor: surface,
+      fill: single ? 'start' : false,
+      backgroundColor: single ? (ctx => {
+        const { chart } = ctx; const area = chart.chartArea;
+        if (!area) return 'transparent';
+        const g = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+        g.addColorStop(0, color + '55'); g.addColorStop(1, color + '00');
+        return g;
+      }) : 'transparent',
+    };
+  });
+
+  const labels = rows.map(r => r.date);
+  const all = datasets.flatMap(d => d.data).filter(v => v != null);
+  const min = Math.min(...all), max = Math.max(...all);
+  const pad = Math.max((max - min) * 0.15, 0.3);
+
+  if (state.chart) state.chart.destroy();
+  state.chart = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    plugins: [crosshair],
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 450, easing: 'easeOutCubic' },
+      layout: { padding: { top: 6, right: 4 } },
+      interaction: { mode: 'index', intersect: false },
+      events: ['mousemove', 'mouseout', 'touchstart', 'touchmove', 'touchend'],
+      onHover: (e, els) => {
+        const idx = (els.length && e.type !== 'mouseout' && e.type !== 'touchend') ? els[0].index : null;
+        setChartHeader(idx);
+        if (idx == null) { chartClearActive(); }
+      },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: {
+          grid: { display: false }, border: { display: false },
+          ticks: {
+            color: text3, font: { size: 11, weight: '500' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5,
+            callback: (v, i) => fmtDay(labels[i]),
+          },
+        },
+        y: {
+          position: 'right', min: Math.floor(min - pad), max: Math.ceil(max + pad),
+          grid: { color: line, drawTicks: false }, border: { display: false },
+          ticks: { color: text3, font: { size: 11, weight: '500' }, maxTicksLimit: 5, padding: 8,
+            callback: v => (Number.isInteger(v) ? v : v.toFixed(1).replace('.', ',')) },
+        },
+      },
+    },
+  });
+  setChartHeader();
+  renderStats(rows);
+}
+
+function chartClearActive() {
+  const c = state.chart; if (!c) return;
+  c.setActiveElements([]); c.tooltip.setActiveElements([], { x: 0, y: 0 }); c.update('none');
+}
+
+function renderStats(rows) {
+  const el = $('stats');
+  if (state.compare) { el.innerHTML = ''; el.classList.add('hidden'); return; }
   el.classList.remove('hidden');
-  document.getElementById('detail-name').textContent = station.name;
-  document.getElementById('detail-chips').innerHTML = buildChipsHTML(station);
-  document.getElementById('detail-prices').innerHTML = buildPricesHTML();
+  const k = state.fuel;
+  const v = rows.map(r => r[k]).filter(x => x != null);
+  if (!v.length) { el.innerHTML = ''; return; }
+  let changes = 0; for (let i = 1; i < v.length; i++) if (Math.abs(v[i] - v[i - 1]) > 0.001) changes++;
+  const avg = v.reduce((a, b) => a + b, 0) / v.length;
+  const tiles = [['Minimum', fmtPrice(Math.min(...v))], ['Maximum', fmtPrice(Math.max(...v))], ['Průměr', fmtPrice(avg)], ['Změn', String(changes)]];
+  el.innerHTML = tiles.map(([l, val]) => `<div class="stat"><div class="stat-l">${l}</div><div class="stat-v">${val}</div></div>`).join('');
 }
 
-// Mobile bottom sheet
-function showSheet(station) {
-  const sheet = document.getElementById('sheet');
-  sheet.classList.remove('hidden');
-  sheet.classList.add('visible');
-  document.getElementById('sheet-name').textContent = station.name;
-  document.getElementById('sheet-chips').innerHTML = buildChipsHTML(station);
-  document.getElementById('sheet-prices').innerHTML = buildPricesHTML();
+function sparkline(key, color) {
+  const v = rangeRows(30).map(r => r[key]).filter(x => x != null);
+  if (v.length < 2) return '<svg class="fr-spark"></svg>';
+  const W = 64, H = 26, P = 2;
+  const min = Math.min(...v), max = Math.max(...v), span = max - min || 1;
+  const x = i => P + i * (W - 2 * P) / (v.length - 1);
+  const y = n => max === min ? H / 2 : P + (H - 2 * P) * (1 - (n - min) / span);
+  let d = `M${x(0).toFixed(1)} ${y(v[0]).toFixed(1)}`;
+  for (let i = 1; i < v.length; i++) d += `H${x(i).toFixed(1)}V${y(v[i]).toFixed(1)}`;
+  return `<svg class="fr-spark" viewBox="0 0 ${W} ${H}" aria-hidden="true"><path d="${d}" fill="none" stroke="${color}" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
-function toggleSheet() {
-  const sheet = document.getElementById('sheet');
-  if (sheet.classList.contains('expanded')) {
-    sheet.classList.remove('expanded');
-  } else {
-    sheet.classList.add('expanded');
+function renderFuelList() {
+  const el = $('fuel-list');
+  if (!state.current) { el.innerHTML = '<div class="empty">Data nejsou k dispozici</div>'; return; }
+  el.innerHTML = FUELS.filter(f => state.current.prices[f.k] != null).map(f => {
+    const ch = lastChange(f.k);
+    const deltaTxt = ch && ch.diff !== 0
+      ? `${arrow(ch.diff)} ${fmtDelta(ch.diff)}${ch.since ? ` · ${fmtDay(ch.since)}` : ''}`
+      : 'beze změny';
+    return `<button class="fuel-row ${f.k === state.fuel && !state.compare ? 'active' : ''}" data-fuel="${f.k}" style="--fc:var(${f.c})" type="button">
+      <span class="fr-name"><span class="dot"></span><span>${f.label}</span></span>
+      ${sparkline(f.k, css(f.c))}
+      <span class="fr-right">
+        <div class="fr-price">${fmtPrice(state.current.prices[f.k])}<small>Kč</small></div>
+        <div class="fr-delta ${trendCls(ch?.diff || 0)}">${deltaTxt}</div>
+      </span>
+    </button>`;
+  }).join('');
+
+  const upd = state.dataUpdated;
+  $('data-note').innerHTML = `Ceny jsou stejné na všech stanicích Tank ONO. Změna ceny se porovnává s předchozí cenou. ` +
+    `Zdroj: <a href="https://tank-ono.cz" target="_blank" rel="noopener">tank-ono.cz</a>` +
+    (upd ? ` · aktualizováno ${upd.toLocaleDateString('cs-CZ')} ${upd.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })}` : '');
+}
+
+function selectFuel(k, { scroll = false } = {}) {
+  state.fuel = k; state.compare = false;
+  $('compare-btn').setAttribute('aria-pressed', 'false');
+  renderHero(); renderFuelList(); renderChart();
+  if (scroll) {
+    const body = isDesktop() ? $('sheet') : $('sheet-body');
+    body.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
-// Refresh detail if prices arrive while station is selected
-function refreshDetail() {
-  if (!selectedId) return;
-  const s = STATIONS.find(x => x.id === selectedId);
-  if (!s) return;
-  if (isMobile()) {
-    const sheet = document.getElementById('sheet');
-    if (sheet.classList.contains('visible')) {
-      document.getElementById('sheet-prices').innerHTML = buildPricesHTML();
-    }
-  } else {
-    const detail = document.getElementById('detail');
-    if (!detail.classList.contains('hidden')) {
-      document.getElementById('detail-prices').innerHTML = buildPricesHTML();
-    }
-  }
-}
+/* ═══════════════════════════════════════════════════════════
+   RENDER — stations tab
+   ═══════════════════════════════════════════════════════════ */
+function renderStationList() {
+  const q = norm(state.query.trim());
+  let list = STATIONS.map(s => ({ s, d: distTo(s) }));
+  if (q) list = list.filter(x => x.s.key.includes(q));
+  if (state.user) list.sort((a, b) => a.d - b.d);
+  else list.sort((a, b) => a.s.label.localeCompare(b.s.label, 'cs'));
 
-// Navigate to station via Google Maps
-function navigateToStation() {
-  if (!selectedId) return;
-  const s = STATIONS.find(x => x.id === selectedId);
-  if (!s) return;
-  const url = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
-  window.open(url, '_blank');
-}
-
-// ── Station list ───────────────────────────────────────────
-function renderList() {
-  const sorted = [...STATIONS];
-  if (userLocation) {
-    sorted.forEach(s => { s._d = distKm(userLocation.lat, userLocation.lng, s.lat, s.lng); });
-    sorted.sort((a, b) => a._d - b._d);
-  } else {
-    sorted.forEach(s => { s._d = null; });
-  }
-  document.getElementById('list-meta').textContent = userLocation ? 'dle vzdálenosti' : `${STATIONS.length} stanic`;
-
-  document.getElementById('station-list').innerHTML = sorted.map(s => {
-    const near = s.id === nearestId;
-    const cls = ['station-item', near ? 'nearest' : '', s.id === selectedId ? 'active' : ''].filter(Boolean).join(' ');
-    const dist = s._d !== null ? `<span class="si-dist">${fmtDist(s._d)}</span>` : '';
-    const badge = near ? `<span class="si-nearest-badge">Nejbližší</span>` : '';
-    return `<div class="${cls}" data-id="${s.id}" onclick="selectStation(${s.id},true)">
-      <div class="si-dot"></div>
-      <div class="si-body">
-        <div class="si-name">${esc(s.name)}</div>
-        ${dist || badge ? `<div class="si-sub">${dist}${badge}</div>` : ''}
-      </div>
-    </div>`;
+  $('st-count').textContent = STATIONS.length;
+  const el = $('station-list');
+  if (!list.length) { el.innerHTML = `<div class="empty">Žádná stanice pro „${esc(state.query)}“</div>`; return; }
+  el.innerHTML = list.map(({ s, d }) => {
+    const near = s.id === state.nearestId;
+    return `<button class="srow ${near ? 'nearest' : ''} ${s.id === state.selectedId ? 'active' : ''}" data-id="${s.id}" type="button">
+      <span class="srow-ico">${ICON.pump}</span>
+      <span class="srow-main">
+        <div class="srow-name">${esc(s.label)}</div>
+        <div class="srow-sub">${near ? '<b>Nejbližší</b> · ' : ''}Tank ONO</div>
+      </span>
+      ${d != null ? `<span class="srow-dist">${fmtDist(d)}</span>` : ''}
+      <span class="srow-chev">${ICON.chev}</span>
+    </button>`;
   }).join('');
 }
 
-function highlightListItem(id) {
-  document.querySelectorAll('.station-item').forEach(el => {
-    el.classList.toggle('active', +el.dataset.id === id);
+function switchTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('.seg-btn').forEach(b => {
+    const on = b.dataset.tab === tab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on);
   });
-  if (id !== null) {
-    const el = document.querySelector(`.station-item[data-id="${id}"]`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }
+  $('tab-trend').classList.toggle('hidden', tab !== 'trend');
+  $('tab-stations').classList.toggle('hidden', tab !== 'stations');
+  if (tab === 'trend') state.chart?.resize();
 }
 
-// ── Geolocation ────────────────────────────────────────────
-function triggerGeolocation() {
-  document.getElementById('locate-btn').classList.add('locating');
-  navigator.geolocation.getCurrentPosition(onGeoOk, onGeoErr, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
-}
-function onGeoOk(pos) {
-  document.getElementById('locate-btn').classList.remove('locating');
-  document.getElementById('geo-notice').classList.add('hidden');
-  userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-
-  if (userMarker) userMarker.setLatLng([userLocation.lat, userLocation.lng]);
-  else {
-    userMarker = L.marker([userLocation.lat, userLocation.lng], {
-      icon: L.divIcon({ html: '<div class="user-dot-wrap"><div class="user-dot-ring"></div><div class="user-dot"></div></div>', className: 'custom-pin', iconSize: [18,18], iconAnchor: [9,9] }),
-      zIndexOffset: 3000, title: 'Vaše poloha',
-    }).addTo(map);
-  }
-
-  let best = null, bestD = Infinity;
-  STATIONS.forEach(s => { const d = distKm(userLocation.lat, userLocation.lng, s.lat, s.lng); if (d < bestD) { bestD = d; best = s; } });
-  const prev = nearestId;
-  nearestId = best ? best.id : null;
-  if (prev && prev !== nearestId) refreshMarker(prev);
-  if (nearestId) refreshMarker(nearestId);
-  renderList();
-
-  if (!selectedId && nearestId) {
-    selectStation(nearestId, false);
-    map.flyTo([best.lat, best.lng], 12, { animate: true, duration: 1 });
-  }
-}
-function onGeoErr() {
-  document.getElementById('locate-btn').classList.remove('locating');
-  document.getElementById('geo-notice').classList.remove('hidden');
-}
-function requestGeo() {
-  if (!navigator.geolocation) { document.getElementById('geo-notice').classList.remove('hidden'); return; }
-  triggerGeolocation();
+/* ═══════════════════════════════════════════════════════════
+   BOTTOM SHEET (mobile)
+   ═══════════════════════════════════════════════════════════ */
+function setExpanded(on) {
+  if (isDesktop()) on = false;
+  state.expanded = on;
+  document.body.classList.toggle('sheet-expanded', on);
+  if (!on) $('sheet-body').scrollTop = 0;
 }
 
-// ── Prices ─────────────────────────────────────────────────
-function setPriceStatus(kind) {
-  const statusEl = document.getElementById('price-status');
-  const dot = document.getElementById('price-dot');
-
-  if (kind === 'ok') {
-    statusEl.textContent = 'Aktuální';
-    dot.className = 'ok';
-    return;
-  }
-
-  if (kind === 'cached') {
-    statusEl.textContent = 'Cache';
-    dot.className = 'ok';
-    return;
-  }
-
-  statusEl.textContent = 'Nedostupné';
-  dot.className = 'error';
+function measurePeek() {
+  const safeB = parseFloat(css('--safe-b-px')) || 0;
+  state.peek = isDesktop() ? 0 : Math.round($('sheet-top').offsetHeight + safeB);
+  document.documentElement.style.setProperty('--peek', state.peek + 'px');
+  state.map?.resize();
 }
 
-async function fetchJson(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return resp.json();
-}
+function initSheetGestures() {
+  const sheet = $('sheet'), top = $('sheet-top'), body = $('sheet-body');
+  let startY = 0, startT = 0, lastY = 0, lastTime = 0, vel = 0, dragging = false, moved = false, pid = null;
 
-function normalizePriceSnapshot(data) {
-  if (!data || !data.prices) return null;
-  const normalized = {
-    natural95: data.prices.natural95 ?? null,
-    natural95premium: data.prices.natural95premium ?? null,
-    natural98: data.prices.natural98 ?? null,
-    diesel: data.prices.diesel ?? null,
-    dieselplus: data.prices.dieselplus ?? null,
-    adblue: data.prices.adblue ?? null,
-    lpg: data.prices.lpg ?? null,
-    validity: data.validity || '',
+  const maxT = () => sheet.offsetHeight - state.peek;
+  const begin = y => {
+    startY = lastY = y; lastTime = performance.now(); vel = 0; moved = false;
+    startT = state.expanded ? 0 : maxT();
+  };
+  const move = y => {
+    const dy = y - startY;
+    if (!moved && Math.abs(dy) < 6) return false;
+    if (!moved) { moved = true; sheet.classList.add('dragging'); }
+    const now = performance.now();
+    vel = (y - lastY) / Math.max(1, now - lastTime); lastY = y; lastTime = now;
+    let t = startT + dy;
+    if (t < 0) t = t / 3;                 // rubber band at the top
+    t = Math.min(t, maxT() + 40);
+    sheet.style.transform = `translateY(${t}px)`;
+    return true;
+  };
+  const end = () => {
+    sheet.classList.remove('dragging');
+    if (!moved) return;
+    const t = startT + (lastY - startY);
+    let open = Math.abs(vel) > 0.45 ? vel < 0 : t < maxT() / 2;
+    sheet.style.transform = '';
+    setExpanded(open);
   };
 
-  if (!normalized.natural95 && !normalized.diesel && !normalized.lpg) return null;
-  return normalized;
-}
-
-async function loadCachedPrices() {
-  const current = await fetchJson('data/current.json?v=' + Date.now()).catch(() => null);
-  const currentPrices = normalizePriceSnapshot(current);
-  if (currentPrices) {
-    return {
-      prices: currentPrices,
-      source: current?.fallbackUsed ? 'cached' : 'static',
-    };
-  }
-
-  const history = await fetchJson('data/history.json?v=' + Date.now()).catch(() => null);
-  const last = history?.prices?.[history.prices.length - 1];
-  if (!last) return null;
-
-  return {
-    prices: {
-      natural95: last.n95 ?? null,
-      natural95premium: last.n95p ?? null,
-      natural98: last.n98 ?? null,
-      diesel: last.die ?? null,
-      dieselplus: last.diep ?? null,
-      adblue: last.adb ?? null,
-      lpg: last.lpg ?? null,
-      validity: [last.vf, last.vt].filter(Boolean).join(' – '),
-    },
-    source: 'cached',
-  };
-}
-
-async function fetchPrices() {
-  const statusEl = document.getElementById('price-status');
-  const btn = document.getElementById('refresh-btn');
-  statusEl.textContent = 'Načítání…';
-  document.getElementById('price-dot').className = 'loading';
-  btn.classList.add('spinning');
-  pricesFetched = !!prices;
-
-  try {
-    const cached = await loadCachedPrices();
-    if (cached) {
-      prices = cached.prices;
-      priceSource = cached.source === 'static' ? 'static' : 'cached';
-      pricesFetched = true;
-      setPriceStatus(priceSource === 'static' ? 'ok' : 'cached');
-      refreshDetail();
-    }
-
-    const now = roundDownToTenMinutes(new Date());
-    const body = new URLSearchParams({
-      txtDate: `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`,
-      hod: String(now.getHours()), min: String(now.getMinutes()).padStart(2,'0'),
-    });
-    const resp = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString(),
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const livePrices = parsePrices(await resp.text());
-    if (livePrices) {
-      prices = livePrices;
-      priceSource = 'live';
-      pricesFetched = true;
-      setPriceStatus('ok');
-    } else if (!prices) {
-      prices = { error: true };
-      priceSource = null;
-      pricesFetched = true;
-      setPriceStatus('error');
-    }
-  } catch (e) {
-    console.error(e);
-    if (!prices) {
-      prices = { error: true };
-      priceSource = null;
-      pricesFetched = true;
-      setPriceStatus('error');
-    } else {
-      setPriceStatus(priceSource === 'cached' ? 'cached' : 'ok');
-    }
-  } finally {
-    pricesFetched = true;
-    btn.classList.remove('spinning');
-    refreshDetail();
-  }
-}
-
-// ── Price parser ───────────────────────────────────────────
-function parsePrices(html) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  let validity = '';
-  const nadpis = doc.querySelector('#nadpis');
-  if (nadpis) {
-    const m = nadpis.textContent.match(/platnost\s+od:\s*([\d/: ]+?)(?:\s+do:\s*([\d/: ]+))?$/i);
-    if (m) validity = [m[1], m[2]].filter(Boolean).map(v => v.trim()).join(' – ');
-  }
-  const table = doc.querySelector('table.cenik');
-  if (!table) return null;
-
-  let cells = null;
-  for (const row of table.querySelectorAll('tr')) {
-    const tds = Array.from(row.querySelectorAll('td'));
-    if (!tds.length) continue;
-    if (/^K[čc]$/i.test(tds[0].textContent.trim()) || /^CZK$/i.test(tds[0].textContent.trim())) { cells = tds; break; }
-  }
-  if (!cells) for (const row of table.querySelectorAll('tr')) {
-    const tds = Array.from(row.querySelectorAll('td'));
-    if (tds.length >= 9) { cells = tds; break; }
-  }
-  if (!cells || cells.length < 9) return null;
-
-  const get = i => {
-    if (i >= cells.length) return null;
-    const v = cells[i].textContent.replace(/\s+/g,'').trim();
-    return (!v || v === '–' || v === '-' || v === ',') ? null : v;
-  };
-  const r = { natural95:get(2), natural95premium:get(3), natural98:get(4), diesel:get(6), dieselplus:get(8), adblue:get(9), lpg:get(10), validity };
-  return Object.values(r).every(v => v === null || v === '') ? null : r;
-}
-
-// ── History ────────────────────────────────────────────────
-let historyChart = null, historyData = null, currentRange = 'week';
-let historySource = null;
-let historyLoadingPromise = null;
-let historyLoadedRange = null;
-const RANGE_DAYS = { week: 7, month: 30, half: 180 };
-
-function getHistoryCutoffDate(range) {
-  const cutoff = new Date();
-  cutoff.setHours(12, 0, 0, 0);
-  cutoff.setDate(cutoff.getDate() - RANGE_DAYS[range]);
-  return cutoff.toISOString().slice(0, 10);
-}
-const FUEL_META = {
-  natural95:        { label: 'Natural 95',  color: '#e5760a',  primary: true },
-  diesel:           { label: 'Diesel',      color: '#2563eb',  primary: true },
-  lpg:              { label: 'LPG',         color: '#16a34a',  primary: true },
-  natural95premium: { label: 'Nat. 95+',    color: '#f59e0b',  primary: false },
-  natural98:        { label: 'Natural 98',  color: '#a855f7',  primary: false },
-  dieselplus:       { label: 'Diesel+',     color: '#06b6d4',  primary: false },
-  adblue:           { label: 'AdBlue',      color: '#64748b',  primary: false },
-};
-const KEY_MAP = { n95:'natural95', n95p:'natural95premium', n98:'natural98', die:'diesel', diep:'dieselplus', adb:'adblue', lpg:'lpg' };
-
-function openHistory() {
-  document.getElementById('history-overlay').classList.remove('hidden');
-  if (!historyData && !historyLoadingPromise) {
-    loadHistoryData('week');
-    return;
-  }
-  switchHistoryTab(currentRange);
-}
-function closeHistory(e) { if (e && e.target !== e.currentTarget) return; document.getElementById('history-overlay').classList.add('hidden'); }
-
-async function loadHistoryData(range = 'week') {
-  const st = document.getElementById('history-status');
-  if (historyLoadingPromise) return historyLoadingPromise;
-
-  st.textContent = 'Načítání…';
-  historyLoadingPromise = (async () => {
-    try {
-      // Try static JSON first
-      const resp = await fetch('data/history.json?v=' + Date.now());
-      if (!resp.ok) throw new Error('fetch failed');
-      const json = await resp.json();
-      if (!json.prices || json.prices.length === 0) throw new Error('empty data');
-      historyData = json.prices.map(p => {
-        const out = { date: p.d };
-        for (const [short, long] of Object.entries(KEY_MAP)) out[long] = p[short] || null;
-        return out;
-      });
-      historySource = { kind: 'static', updated: json.updated };
-      historyLoadedRange = 'half';
-      renderCurrentHistoryRange();
-    } catch (e) {
-      console.warn('Static history failed, falling back to live fetch:', e.message);
-      await loadHistoryLive(range);
-    } finally {
-      historyLoadingPromise = null;
-    }
-  })();
-
-  return historyLoadingPromise;
-}
-
-// Fallback: fetch only requested range first, longer ranges on demand
-async function loadHistoryLive(range = 'week') {
-  const st = document.getElementById('history-status');
-  const requestedDays = RANGE_DAYS[range];
-  const alreadyLoadedDays = historyLoadedRange ? RANGE_DAYS[historyLoadedRange] : -1;
-
-  if (historySource?.kind === 'live' && historyData?.length && alreadyLoadedDays >= requestedDays) {
-    renderCurrentHistoryRange();
-    return;
-  }
-
-  const pts = [], now = new Date();
-  for (let d = requestedDays; d >= 0; d--) {
-    const dt = new Date(now); dt.setDate(dt.getDate() - d);
-    const dd = String(dt.getDate()).padStart(2,'0'), mm = String(dt.getMonth()+1).padStart(2,'0'), yy = dt.getFullYear();
-    try {
-      st.textContent = `Načítání: ${requestedDays - d + 1}/${requestedDays + 1}…`;
-      const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://tank-ono.cz/cz/index.php?page=archiv'), {
-        method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body: `txtDate=${dd}/${mm}/${yy}&hod=12&min=00`,
-      });
-      if (!r.ok) continue;
-      const p = parsePrices(await r.text());
-      if (p && !p.error) {
-        const out = { date: `${yy}-${mm}-${dd}` };
-        out.natural95 = p.natural95; out.natural95premium = p.natural95premium;
-        out.natural98 = p.natural98; out.diesel = p.diesel;
-        out.dieselplus = p.dieselplus; out.adblue = p.adblue; out.lpg = p.lpg;
-        pts.push(out);
-      }
-    } catch {}
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  if (pts.length) {
-    historyData = pts;
-    historySource = { kind: 'live' };
-    historyLoadedRange = range;
-    renderCurrentHistoryRange();
-  } else {
-    st.textContent = 'Historie nedostupná';
-  }
-}
-
-function renderCurrentHistoryRange() {
-  if (!historyData) return;
-  const cutoff = getHistoryCutoffDate(currentRange);
-  const filtered = cutoff ? historyData.filter(d => d.date >= cutoff) : historyData;
-  renderHistoryChart(filtered);
-  renderHistorySummary(filtered);
-
-  const sourceLabel = historySource?.kind === 'live' ? 'live' : 'cache';
-  const latestDataDate = historyData.length ? historyData[historyData.length - 1].date : null;
-  const freshness = latestDataDate ? `, data do ${fmtDate(latestDataDate)}` : '';
-  document.getElementById('history-status').textContent = `${filtered.length} bodů (${sourceLabel}${freshness})`;
-}
-
-async function switchHistoryTab(range) {
-  currentRange = range;
-  document.querySelectorAll('.htab').forEach(el => el.classList.toggle('active', el.dataset.range === range));
-
-  if (!historyData) {
-    await loadHistoryData(range);
-    return;
-  }
-
-  if (historySource?.kind === 'live') {
-    const loadedDays = historyLoadedRange ? RANGE_DAYS[historyLoadedRange] : -1;
-    const requestedDays = RANGE_DAYS[range];
-    if (requestedDays > loadedDays) {
-      await loadHistoryLive(range);
-      return;
-    }
-  }
-
-  renderCurrentHistoryRange();
-}
-
-function fmtDate(iso) { const p = iso.split('-'); return `${p[2]}.${p[1]}.${p[0]}`; }
-
-function renderHistorySummary(data) {
-  const el = document.getElementById('history-summary');
-  if (!data || data.length < 2) { el.innerHTML = ''; return; }
-
-  const primaryFuels = Object.entries(FUEL_META).filter(([,m]) => m.primary);
-  let html = '';
-
-  for (const [key, meta] of primaryFuels) {
-    // Period change: first vs last value in filtered range
-    const vals = data.map(d => ({ date: d.date, v: pf(d[key]) })).filter(x => x.v !== null);
-    if (vals.length < 2) continue;
-
-    const first = vals[0], last = vals[vals.length - 1];
-    const diff = last.v - first.v;
-    const pct = ((diff / first.v) * 100);
-    const sign = diff > 0 ? '+' : '';
-    const cls = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat';
-
-    // Last price change: find last day where price differs from previous day
-    let lastChangeDate = null, lastChangeDiff = null;
-    for (let i = vals.length - 1; i >= 1; i--) {
-      const d = Math.round((vals[i].v - vals[i-1].v) * 100) / 100;
-      if (d !== 0) {
-        lastChangeDate = vals[i].date;
-        lastChangeDiff = d;
-        break;
-      }
-    }
-
-    let lastChangeHtml = '';
-    if (lastChangeDate && lastChangeDiff !== null) {
-      const lcSign = lastChangeDiff > 0 ? '+' : '';
-      const lcCls = lastChangeDiff > 0 ? 'up' : 'down';
-      lastChangeHtml = `<div class="hs-last">Poslední změna: ${fmtDate(lastChangeDate)} <span class="hs-last-val ${lcCls}">${lcSign}${lastChangeDiff.toFixed(2).replace('.',',')} Kč</span></div>`;
-    } else {
-      lastChangeHtml = `<div class="hs-last">Bez změny v období</div>`;
-    }
-
-    html += `<div class="hs-card">
-      <div class="hs-fuel" style="color:${meta.color}">${meta.label}</div>
-      <div class="hs-row">
-        <span class="hs-delta ${cls}">${sign}${pct.toFixed(1).replace('.',',')} %</span>
-        <span class="hs-nom">${sign}${diff.toFixed(2).replace('.',',')} Kč</span>
-      </div>
-      ${lastChangeHtml}
-    </div>`;
-  }
-
-  el.innerHTML = html;
-}
-
-function pf(v) { return (!v || v === ',') ? null : parseFloat(v.replace(',','.')); }
-
-function renderHistoryChart(data) {
-  const ctx = document.getElementById('history-chart').getContext('2d');
-  if (historyChart) historyChart.destroy();
-  if (!data.length) { historyChart = null; return; }
-
-  const dark = getTheme() === 'dark';
-  const gridC = dark ? 'rgba(42,46,62,.6)' : 'rgba(226,229,236,.7)';
-  const tickC = dark ? '#5c6280' : '#8990a5';
-  const keys = Object.keys(FUEL_META);
-  const active = keys.filter(k => data.some(d => pf(d[k]) !== null));
-
-  historyChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: data.map(d => { const p = d.date.split('-'); return `${p[2]}.${p[1]}.`; }),
-      datasets: active.map(k => {
-        const m = FUEL_META[k];
-        return {
-          label: m.label, data: data.map(d => pf(d[k])),
-          borderColor: m.color, backgroundColor: m.color + '18',
-          borderWidth: m.primary ? 2.5 : 1.5,
-          pointRadius: data.length > 30 ? 0 : 3, pointHoverRadius: 5,
-          tension: .3, fill: false, spanGaps: true, hidden: !m.primary,
-        };
-      }),
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'bottom', labels: { color: tickC, font: { size: 11 }, boxWidth: 12, padding: 10, usePointStyle: true } },
-        tooltip: {
-          backgroundColor: dark ? '#181b25' : '#fff', titleColor: dark ? '#e4e6f0' : '#1a1d26',
-          bodyColor: dark ? '#9298b4' : '#4b5068', borderColor: dark ? '#2a2e3e' : '#e2e5ec',
-          borderWidth: 1, padding: 10,
-          callbacks: { label: c => c.parsed.y === null ? null : ` ${c.dataset.label}: ${c.parsed.y.toFixed(2).replace('.',',')} Kč/l` },
-        },
-      },
-      scales: {
-        x: { ticks: { color: tickC, font: { size: 10 }, maxRotation: 45 }, grid: { color: gridC } },
-        y: { ticks: { color: tickC, font: { size: 10 }, callback: v => v + ' Kč' }, grid: { color: gridC } },
-      },
-    },
+  // Drag handle area (pointer events)
+  top.addEventListener('pointerdown', e => {
+    if (isDesktop() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    dragging = true; pid = e.pointerId; begin(e.clientY);
   });
+  window.addEventListener('pointermove', e => {
+    if (!dragging || e.pointerId !== pid) return;
+    if (move(e.clientY) && !top.hasPointerCapture(pid)) { try { top.setPointerCapture(pid); } catch (_) {} }
+  });
+  const up = e => {
+    if (!dragging || e.pointerId !== pid) return;
+    dragging = false; end();
+    if (!moved && e.target.closest('.grabber')) setExpanded(!state.expanded);
+  };
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+  // Swallow the click that follows a drag
+  top.addEventListener('click', e => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+  // Tap empty area of the handle zone toggles
+  top.addEventListener('click', e => {
+    if (isDesktop() || e.target.closest('button')) return;
+    if (e.target === top || e.target.closest('.prices-head')) setExpanded(!state.expanded);
+  });
+
+  // Expanded: pull down from the top of the content collapses the sheet.
+  // Collapsed: any swipe on the visible part of the body opens it.
+  let bodyDrag = false, bodyStart = 0;
+  body.addEventListener('touchstart', e => {
+    if (isDesktop() || dragging) return;
+    if (state.expanded && (body.scrollTop > 0 || e.target.closest('canvas'))) { bodyDrag = false; return; }
+    bodyStart = e.touches[0].clientY; bodyDrag = true;
+    begin(bodyStart);
+  }, { passive: true });
+  body.addEventListener('touchmove', e => {
+    if (!bodyDrag) return;
+    const y = e.touches[0].clientY;
+    if (state.expanded && !moved && y < bodyStart) { bodyDrag = false; return; }   // scrolling content up
+    if (move(y)) e.preventDefault();
+  }, { passive: false });
+  const bodyEnd = () => { if (bodyDrag) { bodyDrag = false; end(); setTimeout(() => { moved = false; }, 0); } };
+  body.addEventListener('touchend', bodyEnd);
+  body.addEventListener('touchcancel', bodyEnd);
 }
 
-// ── Responsive: re-route detail on resize ──────────────────
-let wasMobile = null;
-function handleResize() {
-  const mobile = isMobile();
-  if (wasMobile === mobile) return;
-  wasMobile = mobile;
-  // Re-show detail in correct container if station is selected
-  if (selectedId) {
-    hideDetail();
-    const s = STATIONS.find(x => x.id === selectedId);
-    if (s) showDetail(s);
-  }
+/* ═══════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════ */
+function bindUI() {
+  $('theme-btn').onclick = toggleTheme;
+  $('locate-btn').onclick = () => locate({ userAction: true });
+  $('fit-btn').onclick = fitAll;
+
+  $('hero-prices').addEventListener('click', e => {
+    const b = e.target.closest('[data-fuel]'); if (!b) return;
+    selectFuel(b.dataset.fuel);
+    switchTab('trend');
+    setExpanded(true);
+  });
+  $('fuel-list').addEventListener('click', e => {
+    const b = e.target.closest('[data-fuel]'); if (b) selectFuel(b.dataset.fuel, { scroll: true });
+  });
+  $('station-list').addEventListener('click', e => {
+    const b = e.target.closest('[data-id]'); if (b) selectStation(+b.dataset.id);
+  });
+  document.querySelectorAll('.seg-btn').forEach(b => b.onclick = () => { switchTab(b.dataset.tab); setExpanded(true); });
+  $('ranges').addEventListener('click', e => {
+    const b = e.target.closest('[data-range]'); if (!b) return;
+    state.range = +b.dataset.range;
+    $('ranges').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+    renderChart();
+  });
+  $('compare-btn').onclick = () => {
+    state.compare = !state.compare;
+    $('compare-btn').setAttribute('aria-pressed', String(state.compare));
+    renderHero(); renderFuelList(); renderChart();
+  };
+  $('search').addEventListener('input', e => { state.query = e.target.value; renderStationList(); });
+  $('search').addEventListener('focus', () => setExpanded(true));
+
+  darkMQ.addEventListener?.('change', () => { if (!document.documentElement.dataset.theme) onThemeChange(); });
+
+  new ResizeObserver(measurePeek).observe($('sheet-top'));
+  let wasDesktop = isDesktop();
+  window.addEventListener('resize', () => {
+    const d = isDesktop();
+    if (d !== wasDesktop) { wasDesktop = d; setExpanded(false); measurePeek(); }
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (state.expanded) setExpanded(false); else clearSelection(); } });
 }
 
-// ── Boot ───────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  const saved = localStorage.getItem('tank-ono-theme');
-  if (saved) document.documentElement.setAttribute('data-theme', saved);
-  else if (window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+async function boot() {
+  // expose safe-area insets to JS
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)';
+  document.body.appendChild(probe);
+  const ps = getComputedStyle(probe);
+  document.documentElement.style.setProperty('--safe-t-px', ps.paddingTop);
+  document.documentElement.style.setProperty('--safe-b-px', ps.paddingBottom);
+  probe.remove();
+
   syncThemeColor();
-
-  wasMobile = isMobile();
-  window.addEventListener('resize', handleResize);
-
+  bindUI();
+  initSheetGestures();
+  renderStationCard();
+  renderStationList();
+  measurePeek();
   initMap();
-  renderList();
-  requestGeo();
-  fetchPrices();
-});
+  locate();
+
+  await loadData();
+  renderHero();
+  renderFuelList();
+  renderChart();
+}
+
+document.addEventListener('DOMContentLoaded', boot);
